@@ -38,6 +38,7 @@ import type {
 } from "@/types";
 import { isTalentCategory } from "@/lib/talent/taxonomy";
 import { normalizeForMatch } from "@/lib/talent/classify";
+import { nameSearchTokens } from "@/lib/talent/text";
 import { distanceMiles } from "@/lib/geo/zip-lookup";
 
 export interface PublishTalentInput {
@@ -126,6 +127,10 @@ interface MemoryRow {
  * a stemmed index. Close enough to exercise filters, paging and the ordering
  * contract; it will not agree with Postgres on stemming edge cases, and it is
  * not the thing to reach for when verifying relevance ranking.
+ *
+ * NAME matching is the exception: `nameSearchTokens` is shared with the SQL
+ * side's rules, so the accent folding, the separator handling and the
+ * two-character floor are the same here as in `mcv_talent_name_query`.
  */
 export class MemoryTalentStore implements TalentDirectoryStore {
   private readonly rows = new Map<string, MemoryRow>();
@@ -171,6 +176,11 @@ export class MemoryTalentStore implements TalentDirectoryStore {
 
   async search(filters: TalentSearchFilters): Promise<TalentSearchResult> {
     const terms = filters.query ? normalizeForMatch(filters.query).split(" ").filter(Boolean) : [];
+    // Name tokens are a SEPARATE matcher, mirroring the OR in `talent_search`:
+    // the query is either words from somebody's résumé or somebody's name, and
+    // the two vocabularies must not be merged — see the surname/trade collision
+    // note in 0012 (`Herrera` vs herrería).
+    const nameTerms = filters.query ? nameSearchTokens(filters.query) : [];
     const hasOrigin =
       typeof filters.latitude === "number" && typeof filters.longitude === "number";
     // Mirrors the clamp inside `talent_search`, so a caller cannot widen the
@@ -204,7 +214,15 @@ export class MemoryTalentStore implements TalentDirectoryStore {
             .filter(Boolean)
             .join(" "),
         );
-        return terms.every((t) => haystack.includes(t));
+        if (terms.every((t) => haystack.includes(t))) return true;
+        // Prefix matching, ANDed, so `mar gonz` finds María González and does
+        // not fall back to every María — the `:*` and the `&` in SQL. Order does
+        // not matter on either side.
+        const nameTokens = nameSearchTokens(p.displayName);
+        return (
+          nameTerms.length > 0 &&
+          nameTerms.every((q) => nameTokens.some((token) => token.startsWith(q)))
+        );
       });
 
     matched.sort((a, b) => {

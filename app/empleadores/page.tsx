@@ -32,7 +32,8 @@ export function generateMetadata(): Metadata {
   return {
     title: `Contrata talento | ${brand.name}`,
     description:
-      "Encuentra personas capacitadas y listas para trabajar. Busca por área, ciudad y disponibilidad.",
+      "Busca personas capacitadas y listas para trabajar: por nombre, por oficio, habilidad o " +
+      "certificación, por cercanía y por disponibilidad.",
   };
 }
 
@@ -62,10 +63,17 @@ export default async function EmpleadoresPage({
         <h1 className="text-2xl font-bold text-text-primary sm:text-3xl">
           Encuentra a quien necesitas
         </h1>
+        {/*
+          What this page searches is stated before the form, not left to the box.
+          The previous wording pointed at a city filter that `0011` removed and
+          promised an identification step that no longer exists, so the two
+          sentences an employer read first described a different page.
+        */}
         <p className="max-w-2xl text-base leading-snug text-text-secondary">
-          Estas personas terminaron su currículum y pidieron aparecer aquí. Busca por área,
-          ciudad y disponibilidad. Para ver sus datos de contacto solo necesitas decirnos quién
-          eres.
+          Aquí se buscan <strong>personas</strong>, no empleos: cada una terminó su currículum y
+          pidió aparecer en esta lista. Busca por su nombre si ya sabes a quién quieres, o por el
+          oficio, la habilidad o la certificación que necesitas, y acota por cercanía y
+          disponibilidad. Su currículum se descarga sin registrarte.
         </p>
       </header>
 
@@ -87,7 +95,7 @@ export default async function EmpleadoresPage({
         <EmptyState
           icon="🔍"
           title="No encontramos a nadie con esos filtros"
-          body="Prueba con menos filtros, otra ciudad, o busca solo por área."
+          body="Revisa cómo escribiste el nombre, prueba con menos filtros o una distancia mayor, o elige solo un área y mira quién hay."
         />
       ) : (
         <>

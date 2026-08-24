@@ -41,18 +41,44 @@ export function TalentFilters({
 
   return (
     <form method="GET" action="/empleadores" className="rounded-2xl border border-border bg-white p-4">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <label className="block lg:col-span-2">
-          <span className="text-sm font-semibold text-text-primary">Buscar</span>
-          <input
-            type="search"
-            name="query"
-            defaultValue={filters.query ?? ""}
-            placeholder="cocinera, electricista, manicure…"
-            maxLength={120}
-            className={field}
-          />
-        </label>
+      <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {/*
+          The label spells out both things this box takes, and "personas" first.
+          On a page reached cold from a URL, a lone search box labelled "Buscar"
+          does not say what it searches, and the plausible guesses — empleos,
+          empresas, personas — are all things a hiring site could hold. Guessing
+          wrong returned nothing, silently, which reads as an empty directory
+          rather than a mis-aimed query.
+
+          Two matchers sit behind it, and the help text names both in the user's
+          terms rather than by column: the résumé document (`search_tsv` —
+          headline, summary, skills, certifications, city, state) and the name
+          (`name_tsv`, added in 0012). The example is there because prefix
+          matching is not something anyone assumes: `gonz` finding González is
+          the difference between a name box that feels broken and one that does
+          not, and one concrete pair teaches it faster than a sentence about it.
+        */}
+        <div className="lg:col-span-2">
+          <label className="block">
+            <span className="text-sm font-semibold text-text-primary">
+              Buscar personas por nombre u oficio
+            </span>
+            <input
+              type="search"
+              name="query"
+              defaultValue={filters.query ?? ""}
+              placeholder="María González, cocinera, HVAC…"
+              maxLength={120}
+              aria-describedby="talent-query-help"
+              className={field}
+            />
+          </label>
+          <p id="talent-query-help" className="mt-1 text-xs leading-snug text-text-secondary">
+            Escribe el nombre de una persona, o el oficio, la habilidad o la certificación que
+            necesitas. Con el principio del nombre basta: <strong>gonz</strong> encuentra a
+            González.
+          </p>
+        </div>
 
         <label className="block">
           <span className="text-sm font-semibold text-text-primary">Área</span>

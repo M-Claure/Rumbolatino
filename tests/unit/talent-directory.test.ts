@@ -135,6 +135,84 @@ describe("search", () => {
     }
   });
 
+  // ── Name search (0012) ────────────────────────────────────────────────────
+  // Typing a name used to find nobody and say nothing about why: the name is not
+  // in `search_tsv`. `name_tsv` is a second, UNSTEMMED matcher, ORed with it.
+  //
+  // The three rows seeded above are all named "María G.", which is what the
+  // counts here are against: these tests use `Lucía`/`Lucio` so a first-name
+  // query is unambiguous.
+  describe("by name", () => {
+    beforeEach(async () => {
+      await seed({ slug: "n-1", displayName: "Lucía Fuentes" }, { location: PLACES.katy });
+      await seed({ slug: "n-2", displayName: "Lucio Ferrer" }, { location: PLACES.katy });
+    });
+
+    it("finds a person by their full name, either half of it, or both", async () => {
+      for (const typed of ["Lucía Fuentes", "Fuentes", "Fuentes Lucía"]) {
+        const { profiles, total } = await talent.search({ query: typed });
+        expect(total, typed).toBe(1);
+        expect(profiles[0]?.displayName, typed).toBe("Lucía Fuentes");
+      }
+    });
+
+    it("ignores the accent and the case, in both directions", async () => {
+      for (const typed of ["lucia fuentes", "LUCÍA FUENTES", "LuCia Fuentes"]) {
+        expect((await talent.search({ query: typed })).total, typed).toBe(1);
+      }
+    });
+
+    it("matches the beginning of a name, so a half-typed surname works", async () => {
+      expect((await talent.search({ query: "fuen" })).total).toBe(1);
+      // ANDed, not ORed: "luc fuen" must not fall back to every Luc…
+      expect((await talent.search({ query: "luc fuen" })).total).toBe(1);
+      // …and a prefix the two of them share still returns both.
+      expect((await talent.search({ query: "luc" })).total).toBe(2);
+    });
+
+    it("matches a name only from its start, never from the middle", async () => {
+      // The distinction between the two matchers behind one box: résumé text is
+      // matched by containment, a name by PREFIX. Without that, "ere" would list
+      // Ferrer, and a name box that matches word interiors returns strangers.
+      expect((await talent.search({ query: "errer" })).total).toBe(0);
+      expect((await talent.search({ query: "ferrer" })).total).toBe(1);
+    });
+
+    it("drops one-character tokens instead of prefixing them", async () => {
+      // `a:*` would match a large share of any name column, which turns a single
+      // keystroke into a way to page out the directory. Nothing survives the
+      // floor here, so this is an unfiltered search, not a match-everything one.
+      expect((await talent.search({ query: "a" })).total).toBe(3 + 2);
+    });
+
+    it("still finds people by what they do, which is the other half of the box", async () => {
+      expect((await talent.search({ query: "cocinera" })).total).toBe(1);
+    });
+
+    it("obeys the other filters, so a name cannot reach past them", async () => {
+      // A name match is not a bypass: the category and the radius still apply.
+      expect((await talent.search({ query: "Fuentes", category: "gastronomia" })).total).toBe(0);
+      expect(
+        (
+          await talent.search({
+            query: "Fuentes",
+            latitude: PLACES.miami.latitude,
+            longitude: PLACES.miami.longitude,
+            radiusMiles: 25,
+          })
+        ).total,
+      ).toBe(0);
+    });
+
+    it("keeps an expired listing unfindable by name", async () => {
+      await seed(
+        { slug: "n-9", displayName: "Rosa Vieja" },
+        { expiresAt: new Date(Date.now() - HOUR).toISOString() },
+      );
+      expect((await talent.search({ query: "Rosa Vieja" })).total).toBe(0);
+    });
+  });
+
   it("returns everything when no filter is given", async () => {
     expect((await talent.search({})).total).toBe(3);
   });
