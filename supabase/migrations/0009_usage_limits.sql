@@ -16,6 +16,7 @@
 -- required dependency, so it is the only shared state the app has that costs
 -- nothing new to operate.
 --
+
 -- ── Why the service role, and nothing else, may touch these ─────────────────
 -- `NEXT_PUBLIC_SUPABASE_ANON_KEY` is in the browser bundle, so anything an
 -- anonymous caller may execute, an attacker may execute directly against
