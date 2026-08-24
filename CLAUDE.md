@@ -360,6 +360,24 @@ the directory calls a model**: the category comes from a keyword classifier
   to whole miles for exactly this reason. Device geolocation
   (`components/UseMyLocation.tsx`) sends coordinates to `/api/location`, gets a
   ZIP back, and discards them; a device position is never stored.
+- **Results are a TABLE, not cards** (`components/talent/TalentTable.tsx`): name,
+  location, industry, experience, CV. An employer compares people on the same few
+  attributes, and a card grid makes you re-find each one in a different spot per
+  tile. The name links to the full profile; the CV column is a plain `<a>` — the
+  route sets `Content-Disposition: attachment`, so the whole table needs no
+  client JavaScript at all.
+- **Contact details and the CV are OPEN — no employer identification.** This was
+  a deliberate product decision after the identify-once form was judged not worth
+  the friction. Be clear-eyed about what it means: the résumé carries the
+  person's full name, email and phone, so any published profile's contact details
+  are downloadable by anyone with the URL, and the directory can be walked by a
+  script. What makes it honest rather than a surprise is that `PublishDialog`
+  names exactly this before anyone opts in. What still stands between the
+  directory and a bulk harvest: the `contact_reveal` rate limit (now IP-keyed,
+  and the ONLY remaining ceiling), the `contact_reveals` log which still records
+  every download with a timestamp and address, and random slug suffixes so
+  profiles cannot be enumerated by guessing names.
+  The `employers` table survives in `0010` but nothing reads or writes it.
 - **Employers filter by radius, not by city name.** `?zip=77002&radius=25` — the
   ZIP is resolved to a point server-side, which keeps the URL shareable and
   readable. The city and state text filters were REMOVED with `0011`: typing

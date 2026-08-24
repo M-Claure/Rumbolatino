@@ -8,7 +8,9 @@ import {
   labelForCategory,
 } from "@/lib/talent/taxonomy";
 import { labelForType } from "@/lib/experience-types";
-import { ContactGate } from "@/components/talent/ContactGate";
+import { headers } from "next/headers";
+import { getTalentStore } from "@/lib/repositories";
+import { clientIp } from "@/lib/rate-limit/policy";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +50,14 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
 
   const place = [profile.city, profile.state, profile.country].filter(Boolean).join(", ");
 
+  // Contact details are open — the same decision that opened the PDF download,
+  // and the PDF contains them anyway, so gating this panel beside a free
+  // download would protect nothing. Read through `revealContact` rather than a
+  // plain select so the view is still written to `contact_reveals`.
+  const contact = await getTalentStore()
+    .revealContact({ employerId: null, slug: profile.slug, ip: clientIp(headers()) })
+    .catch(() => null);
+
   return (
     <main className="mx-auto flex min-h-page max-w-3xl flex-col gap-6 px-6 py-10">
       <Link href="/empleadores" className="self-start text-sm font-medium text-accent-dark hover:underline">
@@ -71,7 +81,29 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
         </div>
       </header>
 
-      <ContactGate slug={profile.slug} displayName={profile.displayName} />
+      <section className="rounded-2xl border-2 border-accent bg-white p-5">
+        <h2 className="text-base font-bold text-text-primary">Cómo contactar</h2>
+        <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+          {contact?.fullName && <Row label="Nombre" value={contact.fullName} />}
+          {contact?.email && (
+            <Row label="Correo" value={contact.email} href={`mailto:${contact.email}`} />
+          )}
+          {contact?.phone && (
+            <Row label="Teléfono" value={contact.phone} href={`tel:${contact.phone}`} />
+          )}
+          {contact?.linkedInUrl && (
+            <Row label="LinkedIn" value={contact.linkedInUrl} href={contact.linkedInUrl} />
+          )}
+        </dl>
+        {contact?.resumePdfPath && (
+          <a
+            href={`/api/talent/${encodeURIComponent(profile.slug)}/resume`}
+            className="mt-4 inline-flex items-center justify-center rounded-full bg-accent px-6 py-3 text-sm font-semibold text-accent-on transition hover:bg-accent-hover"
+          >
+            Descargar currículum (PDF)
+          </a>
+        )}
+      </section>
 
       {profile.summary && (
         <Section title="Resumen">
@@ -169,6 +201,23 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
         </Section>
       )}
     </main>
+  );
+}
+
+function Row({ label, value, href }: { label: string; value: string; href?: string }) {
+  return (
+    <div>
+      <dt className="text-xs uppercase tracking-wide text-text-secondary">{label}</dt>
+      <dd className="text-sm font-medium text-text-primary">
+        {href ? (
+          <a href={href} className="text-accent-dark hover:underline">
+            {value}
+          </a>
+        ) : (
+          value
+        )}
+      </dd>
+    </div>
   );
 }
 

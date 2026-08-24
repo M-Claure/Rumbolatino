@@ -166,37 +166,32 @@ describe("search", () => {
 // ── Contact reveal ──────────────────────────────────────────────────────────
 
 describe("revealing a contact", () => {
-  it("hands over the contact and records who saw it, together", async () => {
+  it("hands over the contact and records the access, together", async () => {
     await seed({ slug: "a-1" });
-    await talent.upsertEmployer({
-      id: "emp-1",
-      company: "Salón Bella",
-      contactName: "Ana",
-      email: "ana@salon.com",
-    });
 
-    const contact = await talent.revealContact({ employerId: "emp-1", slug: "a-1" });
+    // Downloads are open to anyone, so there is no employer to attribute this
+    // to — but the row is still written, which is what keeps a timestamp trail.
+    const contact = await talent.revealContact({ employerId: null, slug: "a-1" });
 
     expect(contact?.email).toBe("maria@correo.com");
     expect(contact?.resumePdfPath).toBe("u/p/curriculum.pdf");
-    // The audit row is the point: it answers "who has my phone number?".
     expect(talent.reveals).toHaveLength(1);
-    expect(talent.reveals[0]).toMatchObject({ employerId: "emp-1", slug: "a-1" });
+    expect(talent.reveals[0]).toMatchObject({ employerId: null, slug: "a-1" });
   });
 
   it("reveals nothing, and logs nothing, for a slug that is not live", async () => {
     await seed({ slug: "a-1" });
     await talent.setStatus("funnel-a-1", "unpublished");
 
-    expect(await talent.revealContact({ employerId: "emp-1", slug: "a-1" })).toBeNull();
-    expect(await talent.revealContact({ employerId: "emp-1", slug: "no-existe" })).toBeNull();
+    expect(await talent.revealContact({ employerId: null, slug: "a-1" })).toBeNull();
+    expect(await talent.revealContact({ employerId: null, slug: "no-existe" })).toBeNull();
     // No access happened, so there is no access to record.
     expect(talent.reveals).toHaveLength(0);
   });
 
   it("stops revealing once a listing expires", async () => {
     await seed({ slug: "a-1" }, { expiresAt: new Date(Date.now() - HOUR).toISOString() });
-    expect(await talent.revealContact({ employerId: "emp-1", slug: "a-1" })).toBeNull();
+    expect(await talent.revealContact({ employerId: null, slug: "a-1" })).toBeNull();
   });
 });
 
@@ -277,35 +272,26 @@ describe("proximity search", () => {
 
 describe("directory rate limits", () => {
   it("defines every directory operation with a documented reason", () => {
-    for (const op of [
-      "talent_publish",
-      "directory_search",
-      "contact_reveal",
-      "employer_register",
-    ] as const) {
+    for (const op of ["talent_publish", "directory_search", "contact_reveal"] as const) {
       expect(LIMITS[op].limit).toBeGreaterThan(0);
       expect(LIMITS[op].windowSeconds).toBeGreaterThan(0);
       expect(LIMITS[op].reason.length).toBeGreaterThan(40);
     }
   });
 
-  it("keeps contact_reveal the tightest of the three", () => {
-    // It is the only one that hands out a real person's phone number, so it is
-    // the only one protecting people rather than infrastructure.
+  it("keeps contact_reveal the tightest", () => {
+    // Since the employer form was removed this is the ONLY ceiling left on bulk
+    // collection of people's contact details — everything else here protects
+    // infrastructure, this protects people.
     expect(LIMITS.contact_reveal.limit).toBeLessThan(LIMITS.directory_search.limit);
     expect(isOverLimit("contact_reveal", LIMITS.contact_reveal.limit)).toBe(false);
     expect(isOverLimit("contact_reveal", LIMITS.contact_reveal.limit + 1)).toBe(true);
   });
 
-  it("keys reveals to the employer identity, falling back to the address", () => {
-    expect(rateLimitKey("contact_reveal", { userId: "emp-1" })).toBe("user:emp-1:contact_reveal");
+  it("keys reveals by address, since downloads are anonymous now", () => {
     expect(rateLimitKey("contact_reveal", { ip: "1.2.3.4" })).toBe("ip:1.2.3.4:contact_reveal");
+    // A proxy stripping the address must not become a way to opt out of counting.
+    expect(rateLimitKey("contact_reveal", {})).toBe("ip:unknown:contact_reveal");
   });
 
-  it("bounds employer registration tightly enough that minting identities is not a bypass", () => {
-    // The reveal limit is per-identity, so a script that could register a fresh
-    // "employer" per candidate would sidestep it entirely. That is the only
-    // reason this number is small, and it must stay at or below the reveal limit.
-    expect(LIMITS.employer_register.limit).toBeLessThanOrEqual(LIMITS.contact_reveal.limit);
-  });
 });

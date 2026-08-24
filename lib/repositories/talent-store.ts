@@ -28,7 +28,6 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
-  Employer,
   TalentContact,
   TalentListing,
   TalentLocation,
@@ -58,16 +57,14 @@ export interface PublishTalentInput {
 }
 
 export interface RevealContactInput {
-  employerId: string;
+  /**
+   * Null since the employer form was removed: downloads are open to anyone, so
+   * there is no identity to attribute them to. The row is still written — a
+   * timestamp and an address are a partial answer to "who has my résumé?", and
+   * a partial answer beats none.
+   */
+  employerId: string | null;
   slug: string;
-  ip?: string | null;
-}
-
-export interface UpsertEmployerInput {
-  id: string;
-  company: string;
-  contactName: string;
-  email: string;
   ip?: string | null;
 }
 
@@ -93,9 +90,6 @@ export interface TalentDirectoryStore {
    * the slug is not live — nothing to reveal, so nothing to log.
    */
   revealContact(input: RevealContactInput): Promise<TalentContact | null>;
-
-  upsertEmployer(input: UpsertEmployerInput): Promise<Employer>;
-  getEmployer(id: string): Promise<Employer | null>;
 
   /** Resolve an unpublish/renew token. Null when it matches nothing. */
   findByManageToken(token: string): Promise<{ slug: string; funnelId: string } | null>;
@@ -135,9 +129,8 @@ interface MemoryRow {
  */
 export class MemoryTalentStore implements TalentDirectoryStore {
   private readonly rows = new Map<string, MemoryRow>();
-  private readonly employers = new Map<string, Employer>();
   /** Kept so tests can assert that a reveal was actually audited. */
-  readonly reveals: Array<{ employerId: string; slug: string; at: string }> = [];
+  readonly reveals: Array<{ employerId: string | null; slug: string; at: string }> = [];
 
   private nextId = 1;
 
@@ -247,22 +240,6 @@ export class MemoryTalentStore implements TalentDirectoryStore {
       at: new Date().toISOString(),
     });
     return { ...row.contact };
-  }
-
-  async upsertEmployer(input: UpsertEmployerInput): Promise<Employer> {
-    const employer: Employer = {
-      id: input.id,
-      company: input.company,
-      contactName: input.contactName,
-      email: input.email,
-      createdAt: this.employers.get(input.id)?.createdAt ?? new Date().toISOString(),
-    };
-    this.employers.set(input.id, employer);
-    return employer;
-  }
-
-  async getEmployer(id: string): Promise<Employer | null> {
-    return this.employers.get(id) ?? null;
   }
 
   async findByManageToken(token: string): Promise<{ slug: string; funnelId: string } | null> {
@@ -523,61 +500,6 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
       phone: row.phone,
       linkedInUrl: row.linkedin_url,
       resumePdfPath: row.resume_pdf_path,
-    };
-  }
-
-  async upsertEmployer(input: UpsertEmployerInput): Promise<Employer> {
-    const { data, error } = await this.service
-      .from("employers")
-      .upsert(
-        {
-          id: input.id,
-          company: input.company,
-          contact_name: input.contactName,
-          email: input.email,
-          ip: input.ip ?? null,
-        },
-        { onConflict: "id" },
-      )
-      .select("*")
-      .single();
-    if (error) throw new Error(`No se pudo registrar la empresa: ${error.message}`);
-    const row = data as {
-      id: string;
-      company: string;
-      contact_name: string;
-      email: string;
-      created_at: string;
-    };
-    return {
-      id: row.id,
-      company: row.company,
-      contactName: row.contact_name,
-      email: row.email,
-      createdAt: row.created_at,
-    };
-  }
-
-  async getEmployer(id: string): Promise<Employer | null> {
-    const { data, error } = await this.service
-      .from("employers")
-      .select("*")
-      .eq("id", id)
-      .maybeSingle();
-    if (error || !data) return null;
-    const row = data as {
-      id: string;
-      company: string;
-      contact_name: string;
-      email: string;
-      created_at: string;
-    };
-    return {
-      id: row.id,
-      company: row.company,
-      contactName: row.contact_name,
-      email: row.email,
-      createdAt: row.created_at,
     };
   }
 

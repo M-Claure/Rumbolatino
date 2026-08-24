@@ -5,7 +5,7 @@ import { getBrandConfig } from "@/lib/brand/registry";
 import { getActiveBrandId } from "@/lib/brand/server";
 import { originForZip, searchDirectorySafely } from "@/lib/services/talent-directory";
 import { TalentSearchQuery } from "@/lib/validation/api-schemas";
-import { TalentCard } from "@/components/talent/TalentCard";
+import { TalentTable } from "@/components/talent/TalentTable";
 import { TalentFilters } from "@/components/talent/TalentFilters";
 import type { TalentSearchFilters } from "@/types";
 
@@ -96,13 +96,7 @@ export default async function EmpleadoresPage({
               ? "1 persona encontrada"
               : `${result.total} personas encontradas`}
           </p>
-          <ul className="grid gap-4 sm:grid-cols-2">
-            {result.profiles.map((profile) => (
-              <li key={profile.slug}>
-                <TalentCard profile={profile} />
-              </li>
-            ))}
-          </ul>
+          <TalentTable profiles={result.profiles} />
           {result.total > result.profiles.length && (
             <Pager
               filters={filters}

@@ -44,9 +44,7 @@ export type LimitedOperation =
   /** One directory search. No tokens, but it is the enumeration surface. */
   | "directory_search"
   /** Unlocking one candidate's contact details. The scraping vector. */
-  | "contact_reveal"
-  /** An employer saying who they are. Runs before an identity exists, so IP-keyed. */
-  | "employer_register";
+  | "contact_reveal";
 
 export interface LimitRule {
   /** Requests allowed per window. */
@@ -137,17 +135,9 @@ export const LIMITS: Record<LimitedOperation, LimitRule> = {
       "THE limit that matters. Every hit hands out a real person's phone number, so this " +
       "is the only rate limit here protecting people rather than infrastructure. A " +
       "recruiter shortlists a handful in a sitting; forty an hour is well past any honest " +
-      "session and far short of a useful harvest. Lower it before raising it.",
-  },
-  employer_register: {
-    limit: 20,
-    windowSeconds: HOUR,
-    reason:
-      "Keyed by IP, like profile_create, because this route mints the guest session it " +
-      "then attaches an employer to. A real company says who it is once. Twenty an hour " +
-      "covers an office behind one address and a few corrections to a typo'd email, and " +
-      "stops a script from minting a fresh 'employer' per contact reveal to sidestep the " +
-      "per-identity reveal limit — which is the only reason this number is tight.",
+      "session and far short of a useful harvest. Since the employer form was removed this " +
+      "is keyed by IP and is the ONLY ceiling left on bulk collection — lowering it is " +
+      "cheap, raising it is a real decision.",
   },
 };
 
