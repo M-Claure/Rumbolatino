@@ -53,10 +53,16 @@ export function TalentFilters({
           Two matchers sit behind it, and the help text names both in the user's
           terms rather than by column: the résumé document (`search_tsv` —
           headline, summary, skills, certifications, city, state) and the name
-          (`name_tsv`, added in 0012). The example is there because prefix
-          matching is not something anyone assumes: `gonz` finding González is
-          the difference between a name box that feels broken and one that does
-          not, and one concrete pair teaches it faster than a sentence about it.
+          (`name_tsv`, added in 0012).
+
+          It does NOT mention that a partial name works, though it does
+          (`mcv_talent_name_query` appends `:*` to every token, so `gonz` finds
+          González). That was a deliberate trim — the line reads better without a
+          worked example. The behaviour is a superset of what the text promises,
+          so nobody is misled by the omission; someone who types a whole name
+          gets what they expect, and someone who types half of one is pleasantly
+          surprised. Keep it that way round if this copy changes again: promising
+          less than the search does is safe, the reverse is not.
         */}
         <div className="lg:col-span-2">
           <label className="block">
@@ -75,8 +81,7 @@ export function TalentFilters({
           </label>
           <p id="talent-query-help" className="mt-1 text-xs leading-snug text-text-secondary">
             Escribe el nombre de una persona, o el oficio, la habilidad o la certificación que
-            necesitas. Con el principio del nombre basta: <strong>gonz</strong> encuentra a
-            González.
+            necesitas.
           </p>
         </div>
 
