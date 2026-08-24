@@ -260,6 +260,9 @@ export const UpdateAchievementBody = z.object({
 export const PatchPersonalInfoBody = z.object({
   firstName: z.string().trim().max(R.firstName).nullable().optional(),
   lastName: z.string().trim().max(R.lastName).nullable().optional(),
+  // Sending this RE-DERIVES city, state and the coordinates from the postal
+  // table, so those three can never drift out of agreement with the ZIP.
+  postalCode: z.string().trim().max(R.postalCode).nullable().optional(),
   city: z.string().trim().max(R.city).nullable().optional(),
   state: z.string().trim().max(R.state).nullable().optional(),
   country: z.string().trim().max(R.country).nullable().optional(),
@@ -345,9 +348,14 @@ export const PublishTalentBody = z.object({
 export const TalentSearchQuery = z.object({
   query: z.string().trim().max(120).optional(),
   category: z.enum(TALENT_CATEGORY_IDS).optional(),
-  state: z.string().trim().max(60).optional(),
-  city: z.string().trim().max(120).optional(),
   availability: z.enum(TALENT_AVAILABILITIES).optional(),
+  /**
+   * The employer types a ZIP, not coordinates. It is resolved to a point
+   * server-side (`lib/geo/zip-lookup.ts`), which keeps the URL shareable and
+   * readable — `?zip=77002&radius=25` says what it does, a lat/lng pair does not.
+   */
+  zip: z.string().trim().max(10).optional(),
+  radius: z.coerce.number().min(1).max(500).optional(),
   limit: z.coerce.number().int().min(1).max(60).optional(),
   offset: z.coerce.number().int().min(0).max(5000).optional(),
 });

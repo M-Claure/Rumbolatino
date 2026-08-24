@@ -81,6 +81,7 @@ export function emptyPersonalInformation(profileId: string): PersonalInformation
     resumeProfileId: profileId,
     firstName: null,
     lastName: null,
+    postalCode: null,
     city: null,
     state: null,
     country: null,
@@ -88,6 +89,8 @@ export function emptyPersonalInformation(profileId: string): PersonalInformation
     email: null,
     linkedInUrl: null,
     portfolioUrl: null,
+    latitude: null,
+    longitude: null,
   };
 }
 

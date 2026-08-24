@@ -23,6 +23,7 @@ export function personalState(o: Partial<PersonalInformationState> = {}): Person
   return {
     firstName: null,
     lastName: null,
+    postalCode: null,
     city: null,
     state: null,
     country: null,

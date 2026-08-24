@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { UseMyLocation } from "./UseMyLocation";
 import type { AdaptiveQuestion } from "@/lib/ai/schemas";
 import { MAX_EXPERIENCE_ENTRIES } from "@/lib/config/limits";
 import { EXPERIENCE_TYPE_OPTIONS } from "@/lib/experience-types";
@@ -70,6 +71,10 @@ export function QuestionCard({
   const isOver = overBy > 0;
   // Only meaningful where the person types; options and counters are bounded by
   // what we render, so a count there would be noise.
+  // Set when the locate button resolves a ZIP, so the person can see WHERE we
+  // think they are before answering — a wrong ZIP is otherwise silent.
+  const [resolvedPlace, setResolvedPlace] = useState<string | null>(null);
+
   const TYPED_INPUTS = new Set(["long_text", "repeatable_entry", "short_text", "date", "date_range", "number"]);
   const showsCounter = TYPED_INPUTS.has(question.inputType);
 
@@ -319,20 +324,41 @@ export function QuestionCard({
 
       case "date":
       case "short_text":
-      default:
+      default: {
+        // The ZIP question gets a numeric keypad and a one-tap alternative.
+        // `inputMode` rather than `type="number"`: a leading zero matters in a
+        // ZIP ("07030"), and a number input happily eats it.
+        const isZip = question.questionId === "personal_location";
         return (
-          <input
-            className={overClass}
-            aria-invalid={isOver}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
-            }}
-            placeholder="Escribe tu respuesta…"
-            autoFocus
-          />
+          <>
+            <input
+              className={overClass}
+              aria-invalid={isOver}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
+              placeholder={isZip ? "77002" : "Escribe tu respuesta…"}
+              {...(isZip ? { inputMode: "numeric" as const, autoComplete: "postal-code" } : {})}
+              autoFocus
+            />
+            {isZip && (
+              <UseMyLocation
+                onResolved={({ postalCode, place }) => {
+                  setText(postalCode);
+                  setResolvedPlace(place);
+                }}
+              />
+            )}
+            {isZip && resolvedPlace && (
+              <p className="mt-1 text-sm text-text-secondary">
+                Encontramos: <strong>{resolvedPlace}</strong>
+              </p>
+            )}
+          </>
         );
+      }
     }
   }
 }

@@ -161,6 +161,13 @@ export async function publishTalentProfile(
     funnelId: profile.id,
     userId,
     profile: projection.public,
+    // Straight from the résumé's own captured ZIP. Null for anyone outside the
+    // US, who is then simply absent from radius searches rather than misplaced.
+    location: {
+      postalCode: personal?.postalCode ?? null,
+      latitude: personal?.latitude ?? null,
+      longitude: personal?.longitude ?? null,
+    },
     contact: projection.contact,
     manageToken,
     expiresAt: talentExpiryFrom(publishedAt),

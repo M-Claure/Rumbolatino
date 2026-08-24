@@ -141,6 +141,8 @@ export const REVIEW_FIELD_CHAR_LIMITS = {
   // ── Personal information ──
   firstName: 120,
   lastName: 120,
+  // Five digits, plus room for a ZIP+4 someone pastes in.
+  postalCode: 10,
   city: 120,
   state: 120,
   country: 120,

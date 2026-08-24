@@ -60,8 +60,13 @@ const hasObjective = (s: ResumeProfileState) => has(s.careerGoal) || has(s.targe
 const hasName = (s: ResumeProfileState) => has(s.personalInformation.firstName);
 const hasContact = (s: ResumeProfileState) =>
   s.personalInformation.hasEmail || s.personalInformation.hasPhone;
+// A ZIP is what we ask for, but a non-US answer lands in `city` instead, and
+// both count as "we know where they are" — otherwise the funnel would loop
+// asking a Mexican user for a US ZIP they do not have.
 const hasLocation = (s: ResumeProfileState) =>
-  has(s.personalInformation.city) || has(s.personalInformation.country);
+  has(s.personalInformation.postalCode) ||
+  has(s.personalInformation.city) ||
+  has(s.personalInformation.country);
 const hasBackground = (s: ResumeProfileState) =>
   s.education.length + s.experience.length + s.projects.length + s.achievements.length > 0;
 
@@ -213,15 +218,22 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
   {
     id: "personal_location",
     section: "personal_information",
-    text: "¿En qué ciudad y país vives?",
-    intent: "Ubicación general (opcional pero útil).",
+    text: "¿Cuál es tu código postal?",
+    // Five digits instead of "¿en qué ciudad vives?": shorter to type on a
+    // phone, unambiguous where a city name is not, and the only answer that
+    // yields coordinates — which is what lets employers search by how close
+    // someone is. The city and state shown on the résumé are looked up from it,
+    // so nothing is lost from the CV and the person answers one thing, not two.
+    intent: "Ubicación, para que las empresas cercanas te encuentren.",
     inputType: "short_text",
     required: false,
     allowSkip: true,
     skipLabel: "Prefiero no decir",
-    charLimit: 80, // "Houston, Texas, Estados Unidos" (30)
+    // Room for "77002" and for a non-US answer typed as a place name, which is
+    // accepted rather than rejected — see `resolveLocationAnswer`.
+    charLimit: 60,
     precondition: (s) => hasName(s) && !hasLocation(s),
-    completionEffect: ["city", "country"],
+    completionEffect: ["postalCode", "city", "state"],
     priority: 22,
   },
 

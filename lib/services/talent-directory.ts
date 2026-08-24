@@ -5,6 +5,7 @@ import { resolveExistingUserId } from "@/lib/auth";
 import { getTalentStore } from "@/lib/repositories";
 import { clientIp } from "@/lib/rate-limit/policy";
 import { enforceRateLimit } from "@/lib/services/usage-guard";
+import { lookupZip } from "@/lib/geo/zip-lookup";
 
 /**
  * The guarded read path for the public directory.
@@ -23,6 +24,27 @@ import { enforceRateLimit } from "@/lib/services/usage-guard";
  * `auth.users` row per anonymous visitor would fill the table with junk and hand
  * anyone a way to inflate the guest population from outside. See `lib/auth.ts`.
  */
+/**
+ * Turn `?zip=77002&radius=25` into the coordinates the store filters on.
+ *
+ * An unknown ZIP yields NO origin rather than an error or an empty result: the
+ * employer still sees the rest of their search, and the page tells them the ZIP
+ * was not recognised. Silently returning zero matches would look like "nobody
+ * works near me" when it actually means "you typed five digits wrong".
+ */
+export function originForZip(
+  zip: string | null | undefined,
+  radiusMiles: number | undefined,
+): { latitude: number; longitude: number; radiusMiles: number } | null {
+  const found = lookupZip(zip);
+  if (!found) return null;
+  return {
+    latitude: found.latitude,
+    longitude: found.longitude,
+    radiusMiles: radiusMiles ?? 25,
+  };
+}
+
 export async function searchDirectory(
   filters: TalentSearchFilters,
   headers: Headers,

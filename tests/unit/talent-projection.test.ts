@@ -64,6 +64,7 @@ function personal(o: Partial<PersonalInformation> = {}): PersonalInformation {
     resumeProfileId: "prof-1",
     firstName: "María",
     lastName: "Gutiérrez",
+    postalCode: "77002",
     city: "Houston",
     state: "TX",
     country: "Estados Unidos",
@@ -71,6 +72,8 @@ function personal(o: Partial<PersonalInformation> = {}): PersonalInformation {
     email: "maria@correo.com",
     linkedInUrl: "https://linkedin.com/in/maria",
     portfolioUrl: null,
+    latitude: 29.7594,
+    longitude: -95.3594,
     ...o,
   };
 }

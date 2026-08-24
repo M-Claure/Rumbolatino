@@ -1,6 +1,10 @@
+"use client";
+
+import { useState } from "react";
 import { CATEGORY_OPTIONS, AVAILABILITY_LABELS } from "@/lib/talent/taxonomy";
 import { TALENT_AVAILABILITIES } from "@/types/talent";
 import type { TalentSearchFilters } from "@/types";
+import { UseMyLocation } from "@/components/UseMyLocation";
 
 /**
  * The directory's filter bar.
@@ -17,7 +21,21 @@ import type { TalentSearchFilters } from "@/types";
  * filter would be a back door into the same information — see the filter
  * discipline note in `lib/talent/taxonomy.ts` before adding a field.
  */
-export function TalentFilters({ filters }: { filters: TalentSearchFilters }) {
+export function TalentFilters({
+  filters,
+  zip = "",
+  radius,
+}: {
+  filters: TalentSearchFilters;
+  /** The ZIP the current results were centred on, echoed back into the box. */
+  zip?: string;
+  radius?: number;
+}) {
+  // Held in state only so the locate button can fill it in; the form still
+  // submits as a plain GET, so the search remains a shareable URL.
+  const [zipValue, setZipValue] = useState(zip);
+  const [place, setPlace] = useState<string | null>(null);
+
   const field =
     "mt-1 w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm outline-none focus:border-accent";
 
@@ -48,28 +66,33 @@ export function TalentFilters({ filters }: { filters: TalentSearchFilters }) {
           </select>
         </label>
 
+        {/* ZIP + radius instead of a city name. Typing "Houston" used to miss
+            everyone in Katy, Pasadena and Sugar Land — people who are a short
+            drive away and are exactly who an employer wants to see. */}
         <label className="block">
-          <span className="text-sm font-semibold text-text-primary">Ciudad</span>
+          <span className="text-sm font-semibold text-text-primary">Código postal</span>
           <input
             type="text"
-            name="city"
-            defaultValue={filters.city ?? ""}
-            placeholder="Houston"
-            maxLength={120}
+            name="zip"
+            inputMode="numeric"
+            autoComplete="postal-code"
+            value={zipValue}
+            onChange={(e) => setZipValue(e.target.value)}
+            placeholder="77002"
+            maxLength={10}
             className={field}
           />
         </label>
 
         <label className="block">
-          <span className="text-sm font-semibold text-text-primary">Estado</span>
-          <input
-            type="text"
-            name="state"
-            defaultValue={filters.state ?? ""}
-            placeholder="TX"
-            maxLength={60}
-            className={field}
-          />
+          <span className="text-sm font-semibold text-text-primary">Distancia</span>
+          <select name="radius" defaultValue={String(radius ?? 25)} className={field}>
+            <option value="10">Hasta 10 millas</option>
+            <option value="25">Hasta 25 millas</option>
+            <option value="50">Hasta 50 millas</option>
+            <option value="100">Hasta 100 millas</option>
+            <option value="500">Cualquier distancia</option>
+          </select>
         </label>
       </div>
 
@@ -95,6 +118,20 @@ export function TalentFilters({ filters }: { filters: TalentSearchFilters }) {
         <a href="/empleadores" className="px-3 py-3 text-sm font-medium text-accent-dark hover:underline">
           Limpiar
         </a>
+        <div className="w-full">
+          <UseMyLocation
+            label="Usar mi ubicación"
+            onResolved={({ postalCode, place: p }) => {
+              setZipValue(postalCode);
+              setPlace(p);
+            }}
+          />
+          {place && (
+            <p className="mt-1 text-sm text-text-secondary">
+              Buscando cerca de <strong>{place}</strong>. Pulsa Buscar.
+            </p>
+          )}
+        </div>
       </div>
     </form>
   );

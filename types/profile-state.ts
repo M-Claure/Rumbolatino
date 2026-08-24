@@ -22,6 +22,8 @@ import type {
 export interface PersonalInformationState {
   firstName: string | null;
   lastName: string | null;
+  /** Coordinates are deliberately NOT here: the model has no use for them. */
+  postalCode: string | null;
   city: string | null;
   state: string | null;
   country: string | null;

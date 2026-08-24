@@ -701,7 +701,7 @@ function PersonalEditor({
     lastName: info?.lastName ?? "",
     email: info?.email ?? "",
     phone: info?.phone ?? "",
-    city: info?.city ?? "",
+    postalCode: info?.postalCode ?? "",
     country: info?.country ?? "",
   });
   const set = (k: keyof typeof v) => (value: string) => setV({ ...v, [k]: value });
@@ -737,7 +737,15 @@ function PersonalEditor({
           required
           missing={noContact}
         />
-        <CountedInput label="Ciudad" value={v.city} limit={LIMITS.city} onChange={set("city")} />
+        {/* The ZIP, not the city: saving it re-derives the city and state
+            server-side, so the résumé stays "Houston, TX" and the profile stays
+            findable by proximity. */}
+        <CountedInput
+          label="Código postal"
+          value={v.postalCode}
+          limit={LIMITS.postalCode}
+          onChange={set("postalCode")}
+        />
         <CountedInput label="País" value={v.country} limit={LIMITS.country} onChange={set("country")} />
       </div>
       <div className="mt-2">
@@ -748,7 +756,7 @@ function PersonalEditor({
             [v.lastName, LIMITS.lastName],
             [v.email, LIMITS.email],
             [v.phone, LIMITS.phone],
-            [v.city, LIMITS.city],
+            [v.postalCode, LIMITS.postalCode],
             [v.country, LIMITS.country],
           )}
           onSave={() => onSave(v)}

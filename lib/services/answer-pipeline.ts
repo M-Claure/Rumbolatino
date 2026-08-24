@@ -22,6 +22,7 @@ import {
   MAX_EXPERIENCE_ENTRIES,
 } from "@/lib/config/limits";
 import { assembleProfileState } from "@/lib/profile-state";
+import { resolveLocationAnswer } from "@/lib/geo/location-answer";
 import { advanceFunnelProgress } from "@/lib/question-engine/funnel-progress";
 import { planNextQuestion } from "@/lib/question-engine/adaptive-planner";
 import { getCatalogQuestion } from "@/lib/question-engine/question-catalog";
@@ -151,6 +152,27 @@ export async function processAnswer(
         }, userId);
       }
       interpretation = { summary: "Actualicé tus habilidades según tu confirmación.", needsConfirmation: false };
+    } else if (input.questionId === "personal_location") {
+      // A ZIP is a LOOKUP, not an interpretation. Handled here rather than sent
+      // through `normalizeAnswer` so the city and state on the résumé come from
+      // the postal table instead of a model's idea of where a ZIP is — the same
+      // reason `experience_dates` is a mechanical question.
+      const resolved = resolveLocationAnswer(raw);
+      await store.upsertPersonalInformation(input.profileId, {
+        postalCode: resolved.postalCode,
+        city: resolved.city,
+        state: resolved.state,
+        country: resolved.country,
+        latitude: resolved.latitude,
+        longitude: resolved.longitude,
+      });
+      interpretation = {
+        summary: resolved.matched
+          ? `Anoté que vives en ${resolved.city}, ${resolved.state}.`
+          : "Anoté tu ubicación.",
+        needsConfirmation: false,
+      };
+      analytics.track("personal_information_completed", { resumeProfileId: input.profileId }, userId);
     } else if (input.questionId === "skills_add") {
       const names = raw
         .split(/[,;\n]+|\s+y\s+/i)

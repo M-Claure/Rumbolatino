@@ -57,6 +57,13 @@ export function TalentCard({ profile }: { profile: TalentProfilePublic }) {
       )}
 
       <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-secondary">
+        {/* Rounded to whole miles on purpose: it is measured between ZIP-area
+            centroids, so "a 12 millas" is honest and "a 12.4 millas" is not. */}
+        {typeof profile.distanceMiles === "number" && (
+          <span className="font-medium text-accent-dark">
+            📏 a {Math.round(profile.distanceMiles)} millas
+          </span>
+        )}
         {place && <span>📍 {place}</span>}
         <span>🗂️ {YEARS_BUCKET_LABELS[profile.yearsBucket]}</span>
         <span>🕒 {AVAILABILITY_SHORT_LABELS[profile.availability]}</span>

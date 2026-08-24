@@ -167,6 +167,19 @@ export interface PersonalInformation {
   resumeProfileId: string;
   firstName: string | null;
   lastName: string | null;
+  /**
+   * US ZIP code, five digits — the ONE location question the funnel asks.
+   *
+   * A ZIP is faster to type than a city, unambiguous where a city name is not
+   * ("Springfield"), and it is the only form of the answer that yields
+   * coordinates, which is what makes "employers near me" possible at all.
+   * `city`, `state` and the coordinates below are all DERIVED from it by
+   * `lib/geo/zip-lookup.ts` at capture time — the person is never asked twice.
+   *
+   * Null for anyone outside the US, who answers the same question with free
+   * text that lands in `city`. They simply do not appear in radius searches.
+   */
+  postalCode: string | null;
   city: string | null;
   state: string | null;
   country: string | null;
@@ -174,6 +187,16 @@ export interface PersonalInformation {
   email: string | null;
   linkedInUrl: string | null;
   portfolioUrl: string | null;
+  /**
+   * The ZIP's centroid, not the person's address — we never ask for one.
+   *
+   * A ZIP is an AREA, sometimes a large rural one, so this is accurate to the
+   * middle of that area and can be several miles from where someone actually
+   * lives. Good enough for "who is near me"; never present it as an exact
+   * distance to a person, and never plot it as their home.
+   */
+  latitude: number | null;
+  longitude: number | null;
 }
 
 export interface EducationEntry {

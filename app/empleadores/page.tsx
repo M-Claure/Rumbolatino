@@ -3,7 +3,7 @@ import Link from "next/link";
 import { headers } from "next/headers";
 import { getBrandConfig } from "@/lib/brand/registry";
 import { getActiveBrandId } from "@/lib/brand/server";
-import { searchDirectorySafely } from "@/lib/services/talent-directory";
+import { originForZip, searchDirectorySafely } from "@/lib/services/talent-directory";
 import { TalentSearchQuery } from "@/lib/validation/api-schemas";
 import { TalentCard } from "@/components/talent/TalentCard";
 import { TalentFilters } from "@/components/talent/TalentFilters";
@@ -44,8 +44,16 @@ export default async function EmpleadoresPage({
   // Anything not on the schema is dropped rather than passed through; a bad
   // value falls back to an unfiltered search instead of erroring a public page.
   const parsed = TalentSearchQuery.safeParse(searchParams);
-  const filters: TalentSearchFilters = parsed.success ? parsed.data : {};
+  const raw = parsed.success ? parsed.data : {};
+  const { zip, radius, ...rest } = raw;
 
+  const origin = originForZip(zip, radius);
+  // A ZIP that was typed but not recognised: the search still runs without a
+  // radius, and the page says so rather than showing an empty list that looks
+  // like "nobody is near you".
+  const badZip = Boolean(zip) && origin === null;
+
+  const filters: TalentSearchFilters = { ...rest, ...(origin ?? {}) };
   const result = await searchDirectorySafely({ ...filters, limit: 24 }, headers());
 
   return (
@@ -61,7 +69,13 @@ export default async function EmpleadoresPage({
         </p>
       </header>
 
-      <TalentFilters filters={filters} />
+      <TalentFilters filters={filters} zip={zip ?? ""} radius={radius} />
+
+      {badZip && (
+        <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          No reconocimos el código postal <strong>{zip}</strong>. Revísalo, o busca sin él.
+        </p>
+      )}
 
       {result === null ? (
         <EmptyState
@@ -90,7 +104,13 @@ export default async function EmpleadoresPage({
             ))}
           </ul>
           {result.total > result.profiles.length && (
-            <Pager filters={filters} shown={result.profiles.length} total={result.total} />
+            <Pager
+              filters={filters}
+              zip={zip}
+              radius={radius}
+              shown={result.profiles.length}
+              total={result.total}
+            />
           )}
         </>
       )}
@@ -130,10 +150,14 @@ function EmptyState({ icon, title, body }: { icon: string; title: string; body: 
  */
 function Pager({
   filters,
+  zip,
+  radius,
   shown,
   total,
 }: {
   filters: TalentSearchFilters;
+  zip?: string;
+  radius?: number;
   shown: number;
   total: number;
 }) {
@@ -141,9 +165,14 @@ function Pager({
   const params = (next: number) => {
     const q = new URLSearchParams();
     for (const [key, value] of Object.entries(filters)) {
-      if (key === "offset" || key === "limit" || value === undefined || value === "") continue;
+      // `latitude`/`longitude` are derived from the ZIP on every request, so the
+      // URL carries the ZIP the employer typed instead — shareable and readable.
+      if (["offset", "limit", "latitude", "longitude", "radiusMiles"].includes(key)) continue;
+      if (value === undefined || value === null || value === "") continue;
       q.set(key, String(value));
     }
+    if (zip) q.set("zip", zip);
+    if (radius) q.set("radius", String(radius));
     if (next > 0) q.set("offset", String(next));
     return `/empleadores?${q.toString()}`;
   };

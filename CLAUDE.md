@@ -341,6 +341,34 @@ the directory calls a model**: the category comes from a keyword classifier
   filter that is too broad costs an employer a scroll; one that overstates
   seniority is a false claim about a person. Re-publishing re-derives them, so
   fixing the résumé fixes the listing.
+- **Location is a ZIP, and everything else is derived from it.** The funnel asks
+  `¿Cuál es tu código postal?` — five digits are faster to type on a phone than a
+  city, unambiguous where a city name is not, and the only answer that yields
+  coordinates. `lib/geo/zip-lookup.ts` turns it into city, state and a centroid,
+  so the résumé still prints "Houston, TX" and nobody is asked twice. A non-US
+  answer is kept verbatim in `city` with null coordinates: those people are never
+  mislocated, they are simply absent from radius searches. The PATCH route
+  re-derives on every ZIP change, so the four fields cannot drift apart.
+- **The ZIP table is bundled, not a geocoding API.** 41k rows / 1.8 MB from
+  GeoNames (CC BY 4.0 — attribution in `docs/attributions.md`), `server-only` so
+  it never reaches a browser. No API key, no per-request cost, no rate limit that
+  bites when the product is busy, and no third party learning where users live.
+- **Coordinates are ZIP-AREA CENTROIDS, never addresses.** We never ask for a
+  street address. A distance is therefore between the middles of two postal
+  areas and can be several miles off for any individual — right for ranking who
+  is nearby, wrong to present as an exact distance to a person. The card rounds
+  to whole miles for exactly this reason. Device geolocation
+  (`components/UseMyLocation.tsx`) sends coordinates to `/api/location`, gets a
+  ZIP back, and discards them; a device position is never stored.
+- **Employers filter by radius, not by city name.** `?zip=77002&radius=25` — the
+  ZIP is resolved to a point server-side, which keeps the URL shareable and
+  readable. The city and state text filters were REMOVED with `0011`: typing
+  "Houston" missed everyone in Katy, Pasadena and Sugar Land, who are a short
+  drive away and exactly who an employer wants. `talent_search` prefilters on a
+  bounding box (indexed lat/lng) then trims the corners with haversine, so a
+  "25 mile" search does not quietly reach 35 on the diagonal. Plain columns
+  rather than PostGIS: this table holds thousands of rows, not millions.
+  `mcv_distance_miles` in SQL and `distanceMiles` in TS must stay in agreement.
 - **Seniority is a BUCKET, never a number.** An exact figure plus a graduation
   year is an age, which this product refuses to collect at all. For the same
   reason the filter set is closed — free text, category, city, state,

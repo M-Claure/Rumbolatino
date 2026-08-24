@@ -1,6 +1,6 @@
 import { handleRoute, ok } from "@/lib/http";
 import { headers } from "next/headers";
-import { searchDirectory } from "@/lib/services/talent-directory";
+import { originForZip, searchDirectory } from "@/lib/services/talent-directory";
 import { TalentSearchQuery } from "@/lib/validation/api-schemas";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,10 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   return handleRoute(async () => {
     const url = new URL(request.url);
-    const filters = TalentSearchQuery.parse(Object.fromEntries(url.searchParams));
-    return ok(await searchDirectory(filters, headers()));
+    const { zip, radius, ...rest } = TalentSearchQuery.parse(
+      Object.fromEntries(url.searchParams),
+    );
+    const origin = originForZip(zip, radius);
+    return ok(await searchDirectory({ ...rest, ...(origin ?? {}) }, headers()));
   });
 }

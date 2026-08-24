@@ -109,6 +109,7 @@ function toPersonalState(pi: PersonalInformation | null): PersonalInformationSta
   return {
     firstName: pi?.firstName ?? null,
     lastName: pi?.lastName ?? null,
+    postalCode: pi?.postalCode ?? null,
     city: pi?.city ?? null,
     state: pi?.state ?? null,
     country: pi?.country ?? null,

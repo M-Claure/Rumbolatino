@@ -177,7 +177,7 @@ function scoreIdentity(
   let score = 0;
   if (hasName) score += 45;
   if (hasContact) score += 40;
-  if (nonEmpty(pi.city) || nonEmpty(pi.country)) score += 15;
+  if (nonEmpty(pi.postalCode) || nonEmpty(pi.city) || nonEmpty(pi.country)) score += 15;
   return score;
 }
 
@@ -216,7 +216,7 @@ function collectHelpful(
   const pi = input.personalInformation;
 
   if (!nonEmpty(pi.lastName)) out.push(mf("personal_information", "lastName", "Tus apellidos"));
-  if (!nonEmpty(pi.city) && !nonEmpty(pi.country))
+  if (!nonEmpty(pi.postalCode) && !nonEmpty(pi.city) && !nonEmpty(pi.country))
     out.push(mf("personal_information", "location", "Tu ciudad o país"));
   if (ctx.hasContact && !pi.hasLinkedIn)
     out.push(mf("personal_information", "linkedIn", "Tu perfil de LinkedIn (opcional)"));

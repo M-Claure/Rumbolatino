@@ -136,6 +136,15 @@ export interface TalentProfilePublic {
   state: string | null;
   country: string | null;
   publishedAt: string;
+  /**
+   * How far this person is from the SEARCHER, in miles. Present only on radius
+   * search results; the projection never sets it, because it is a property of a
+   * query and not of a person.
+   *
+   * Measured between ZIP-area centroids, so treat it as "roughly this far", not
+   * as a distance to anybody's door — see `latitude` on `PersonalInformation`.
+   */
+  distanceMiles?: number | null;
 }
 
 /**
@@ -168,11 +177,29 @@ export interface TalentSearchResult {
 export interface TalentSearchFilters {
   query?: string | null;
   category?: TalentCategory | null;
-  state?: string | null;
-  city?: string | null;
   availability?: TalentAvailability | null;
+  /**
+   * Origin of a radius search. Both set => results are limited to
+   * `radiusMiles` around this point and ordered nearest-first. Both absent =>
+   * no distance filter at all, which is also what anyone without a US ZIP needs,
+   * since they have no coordinates to be found by.
+   *
+   * City and state text filters were REMOVED when this arrived: keeping both
+   * would leave the brittle behaviour (typing "Houston" misses everyone in
+   * Katy, Pasadena and Sugar Land) that proximity exists to replace.
+   */
+  latitude?: number | null;
+  longitude?: number | null;
+  radiusMiles?: number | null;
   limit?: number;
   offset?: number;
+}
+
+/** Where a published profile sits on a map. Stored, but never returned publicly. */
+export interface TalentLocation {
+  postalCode: string | null;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 /**

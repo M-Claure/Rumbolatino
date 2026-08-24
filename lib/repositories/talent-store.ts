@@ -31,6 +31,7 @@ import type {
   Employer,
   TalentContact,
   TalentListing,
+  TalentLocation,
   TalentProfilePublic,
   TalentProfileStatus,
   TalentSearchFilters,
@@ -38,12 +39,19 @@ import type {
 } from "@/types";
 import { isTalentCategory } from "@/lib/talent/taxonomy";
 import { normalizeForMatch } from "@/lib/talent/classify";
+import { distanceMiles } from "@/lib/geo/zip-lookup";
 
 export interface PublishTalentInput {
   funnelId: string;
   userId: string;
   /** The public projection, slug included. */
   profile: TalentProfilePublic;
+  /**
+   * Coordinates for radius search. Stored on the row but never returned by the
+   * public read functions — an employer learns that someone is 12 miles away,
+   * not the point they were measured from.
+   */
+  location: TalentLocation;
   contact: TalentContact;
   manageToken: string;
   expiresAt: string;
@@ -112,6 +120,7 @@ interface MemoryRow {
   expiresAt: string;
   manageToken: string;
   profile: TalentProfilePublic;
+  location: TalentLocation;
   contact: TalentContact;
 }
 
@@ -143,6 +152,7 @@ export class MemoryTalentStore implements TalentDirectoryStore {
       // A re-publish keeps the token that may already have been emailed out.
       manageToken: existing?.manageToken ?? input.manageToken,
       profile: JSON.parse(JSON.stringify(input.profile)) as TalentProfilePublic,
+      location: { ...input.location },
       contact: { ...input.contact },
     };
     this.rows.set(input.funnelId, row);
@@ -168,32 +178,59 @@ export class MemoryTalentStore implements TalentDirectoryStore {
 
   async search(filters: TalentSearchFilters): Promise<TalentSearchResult> {
     const terms = filters.query ? normalizeForMatch(filters.query).split(" ").filter(Boolean) : [];
+    const hasOrigin =
+      typeof filters.latitude === "number" && typeof filters.longitude === "number";
+    // Mirrors the clamp inside `talent_search`, so a caller cannot widen the
+    // radius past what the database would allow either.
+    const radius = Math.min(Math.max(filters.radiusMiles ?? 25, 1), 500);
+    const origin = hasOrigin
+      ? { latitude: filters.latitude as number, longitude: filters.longitude as number }
+      : null;
 
-    const matched = this.live().filter((row) => {
-      const p = row.profile;
-      if (filters.category && p.category !== filters.category) return false;
-      if (filters.state && (p.state ?? "").toLowerCase() !== filters.state.toLowerCase()) return false;
-      if (filters.city && (p.city ?? "").toLowerCase() !== filters.city.toLowerCase()) return false;
-      if (filters.availability && p.availability !== filters.availability) return false;
-      if (terms.length === 0) return true;
-      const haystack = normalizeForMatch(
-        [p.headline, p.summary, p.skills.join(" "), p.certifications.join(" "), p.city, p.state]
-          .filter(Boolean)
-          .join(" "),
+    const matched = this.live()
+      .map((row) => ({
+        row,
+        // Someone with no ZIP has no coordinates and so can never match a radius
+        // search — the same as in SQL, where the null check excludes them.
+        distance:
+          origin && row.location.latitude !== null && row.location.longitude !== null
+            ? distanceMiles(origin, {
+                latitude: row.location.latitude,
+                longitude: row.location.longitude,
+              })
+            : null,
+      }))
+      .filter(({ row, distance }) => {
+        const p = row.profile;
+        if (filters.category && p.category !== filters.category) return false;
+        if (filters.availability && p.availability !== filters.availability) return false;
+        if (origin && (distance === null || distance > radius)) return false;
+        if (terms.length === 0) return true;
+        const haystack = normalizeForMatch(
+          [p.headline, p.summary, p.skills.join(" "), p.certifications.join(" "), p.city, p.state]
+            .filter(Boolean)
+            .join(" "),
+        );
+        return terms.every((t) => haystack.includes(t));
+      });
+
+    matched.sort((a, b) => {
+      // Nearest first when there is an origin — that is the question being
+      // asked. Recency otherwise.
+      if (origin) return (a.distance ?? Infinity) - (b.distance ?? Infinity);
+      return (
+        new Date(b.row.profile.publishedAt).getTime() -
+        new Date(a.row.profile.publishedAt).getTime()
       );
-      return terms.every((t) => haystack.includes(t));
     });
-
-    matched.sort(
-      (a, b) =>
-        new Date(b.profile.publishedAt).getTime() - new Date(a.profile.publishedAt).getTime(),
-    );
 
     const offset = Math.max(filters.offset ?? 0, 0);
     const limit = Math.min(filters.limit ?? 24, 60);
     return {
       total: matched.length,
-      profiles: matched.slice(offset, offset + limit).map((r) => r.profile),
+      profiles: matched.slice(offset, offset + limit).map(({ row, distance }) =>
+        distance === null ? row.profile : { ...row.profile, distanceMiles: distance },
+      ),
     };
   }
 
@@ -343,6 +380,9 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
           city: p.city,
           state: p.state,
           country: p.country,
+          postal_code: input.location.postalCode,
+          latitude: input.location.latitude,
+          longitude: input.location.longitude,
           status: "published",
           published_at: p.publishedAt,
           expires_at: input.expiresAt,
@@ -428,20 +468,28 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
     const { data, error } = await this.service.rpc("talent_search", {
       p_query: filters.query ?? null,
       p_category: filters.category ?? null,
-      p_state: filters.state ?? null,
-      p_city: filters.city ?? null,
       p_availability: filters.availability ?? null,
+      p_lat: filters.latitude ?? null,
+      p_lng: filters.longitude ?? null,
+      p_radius_miles: filters.radiusMiles ?? 25,
       p_limit: filters.limit ?? 24,
       p_offset: filters.offset ?? 0,
     });
     if (error) throw new Error(`No se pudo buscar en el directorio: ${error.message}`);
 
-    const rows = (data ?? []) as Array<TalentProfileRow & { total_count: number }>;
+    const rows = (data ?? []) as Array<
+      TalentProfileRow & { total_count: number; distance_miles: number | null }
+    >;
     return {
       // The total rides on every row (one round trip, see the function); an empty
       // result set therefore has no row to carry it, which is correctly 0.
       total: rows.length > 0 ? Number(rows[0]!.total_count) : 0,
-      profiles: rows.map(rowToPublic),
+      profiles: rows.map((row) => {
+        const profile = rowToPublic(row);
+        return row.distance_miles === null
+          ? profile
+          : { ...profile, distanceMiles: Number(row.distance_miles) };
+      }),
     };
   }
 
