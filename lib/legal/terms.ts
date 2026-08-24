@@ -22,3 +22,22 @@ export const TERMS_URL = "https://aprende.com/avisos-de-privacidad/";
 
 /** User-facing label for the notice (Spanish). */
 export const TERMS_LABEL = "aviso de privacidad";
+
+/**
+ * Consent to PUBLISH a profile to the talent directory — a second, separate
+ * consent, versioned independently of `TERMS_VERSION`.
+ *
+ * Two versions rather than one because the two acts differ in kind. Accepting
+ * `TERMS_VERSION` gets you a private document. Accepting this one puts your
+ * name, your city, your work history and a way to reach you somewhere employers
+ * can search — and unlike a résumé you can delete from your phone, a published
+ * listing is out of your hands the moment someone reads it.
+ *
+ * Bump this whenever what gets published, or who can see it, changes. A stored
+ * consent names the version it was given against, so an old consent never
+ * silently authorizes a new disclosure.
+ */
+export const PUBLISH_TERMS_VERSION = "2026-08-24";
+
+/** User-facing label for the publish consent (Spanish). */
+export const PUBLISH_TERMS_LABEL = "aviso de publicación de perfil";

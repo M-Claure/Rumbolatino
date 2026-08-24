@@ -146,6 +146,19 @@ export interface ResumeProfile {
   termsAcceptedAt: string | null;
   /** The terms version (see `lib/legal/terms.ts`) the user accepted. */
   termsVersion: string | null;
+  /**
+   * When the user consented to PUBLISHING a directory profile, and to which
+   * version of the publish notice (`PUBLISH_TERMS_VERSION`).
+   *
+   * Deliberately separate from `termsAcceptedAt`. That one covers building a
+   * résumé — a private document only its author can read. This one covers
+   * putting a name, a work history and a way to be contacted somewhere strangers
+   * can find it, which is a different act with different consequences, and
+   * consent to the first has never implied consent to the second. Never infer
+   * one from the other, and never set this anywhere but the publish route.
+   */
+  publishConsentAt: string | null;
+  publishConsentVersion: string | null;
   createdAt: string;
   updatedAt: string;
 }

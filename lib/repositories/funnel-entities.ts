@@ -69,6 +69,8 @@ export function buildProfile(userId: string, input: CreateProfileInput): ResumeP
     finalizedAt: input.finalizedAt ?? null,
     termsAcceptedAt: input.termsAcceptedAt ?? null,
     termsVersion: input.termsVersion ?? null,
+    publishConsentAt: input.publishConsentAt ?? null,
+    publishConsentVersion: input.publishConsentVersion ?? null,
     createdAt: nowIso(),
     updatedAt: nowIso(),
   };

@@ -38,7 +38,15 @@ export type LimitedOperation =
   /** Model-assisted capture: interests extraction, entry enrichment, skill suggestion. */
   | "assist"
   /** Rendering the PDF. No tokens, but it launches Chromium. */
-  | "export_pdf";
+  | "export_pdf"
+  /** Publishing (or re-publishing) a profile to the talent directory. */
+  | "talent_publish"
+  /** One directory search. No tokens, but it is the enumeration surface. */
+  | "directory_search"
+  /** Unlocking one candidate's contact details. The scraping vector. */
+  | "contact_reveal"
+  /** An employer saying who they are. Runs before an identity exists, so IP-keyed. */
+  | "employer_register";
 
 export interface LimitRule {
   /** Requests allowed per window. */
@@ -104,6 +112,42 @@ export const LIMITS: Record<LimitedOperation, LimitRule> = {
     reason:
       "No tokens, but each one may cold-start Chromium — which is CPU, a 60s function " +
       "ceiling, and the easiest way to exhaust concurrency.",
+  },
+  talent_publish: {
+    limit: 20,
+    windowSeconds: HOUR,
+    reason:
+      "Publishing is idempotent per résumé — it updates one row — so a person needs a " +
+      "handful at most: publish, fix a category, re-publish after an edit. Twenty is " +
+      "generous for that and still bounds a script rewriting a listing in a loop.",
+  },
+  directory_search: {
+    limit: 300,
+    windowSeconds: HOUR,
+    reason:
+      "Browsing is the point, and an employer filtering through a category legitimately " +
+      "makes dozens of requests. This is not the control that stops scraping — the page " +
+      "size is capped inside `talent_search` and the results carry no contact data at " +
+      "all — it only stops a crawler from becoming a load problem.",
+  },
+  contact_reveal: {
+    limit: 40,
+    windowSeconds: HOUR,
+    reason:
+      "THE limit that matters. Every hit hands out a real person's phone number, so this " +
+      "is the only rate limit here protecting people rather than infrastructure. A " +
+      "recruiter shortlists a handful in a sitting; forty an hour is well past any honest " +
+      "session and far short of a useful harvest. Lower it before raising it.",
+  },
+  employer_register: {
+    limit: 20,
+    windowSeconds: HOUR,
+    reason:
+      "Keyed by IP, like profile_create, because this route mints the guest session it " +
+      "then attaches an employer to. A real company says who it is once. Twenty an hour " +
+      "covers an office behind one address and a few corrections to a typo'd email, and " +
+      "stops a script from minting a fresh 'employer' per contact reveal to sidestep the " +
+      "per-identity reveal limit — which is the only reason this number is tight.",
   },
 };
 

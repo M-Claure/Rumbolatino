@@ -10,7 +10,42 @@ import type {
   ResumeProfile,
   ResumeProfileState,
   Skill,
+  TalentProfileStatus,
 } from "@/types";
+
+/** What the publish popup needs. Mirrors `PublishDefaults` on the server. */
+export interface PublishDefaults {
+  displayName: string;
+  email: string | null;
+  phone: string | null;
+  published: boolean;
+}
+
+export interface PublishResult {
+  listing: {
+    slug: string;
+    status: TalentProfileStatus;
+    expiresAt: string;
+  };
+}
+
+export interface EmployerIdentity {
+  company: string;
+  contactName: string;
+  email: string;
+}
+
+export interface RevealedContact {
+  contact: {
+    fullName: string | null;
+    email: string | null;
+    phone: string | null;
+    linkedInUrl: string | null;
+  };
+  /** Whether a PDF exists. Never a path — the employer does not learn where it lives. */
+  hasResume: boolean;
+}
+
 
 export class ApiError extends Error {
   code?: string;
@@ -240,4 +275,44 @@ export const api = {
     return res.blob();
   },
   previewUrl: (id: string) => `/api/resume-profiles/${id}/resume/preview`,
+
+  // ── Talent directory ──────────────────────────────────────────────────────
+
+  /** What the publish form should show. Side-effect free. */
+  publishDefaults: (id: string) =>
+    req<{ defaults: PublishDefaults }>(`/api/resume-profiles/${id}/publish`),
+
+  /** Publish the profile. The consent is the only input. */
+  publishProfile: (id: string) =>
+    req<PublishResult>(`/api/resume-profiles/${id}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ acceptPublishTerms: true }),
+    }),
+
+  /** Take the listing down. Idempotent. */
+  unpublishProfile: (id: string) =>
+    req<{ status: string }>(`/api/resume-profiles/${id}/publish`, { method: "DELETE" }),
+
+  // ── Employer side ─────────────────────────────────────────────────────────
+
+  /** Has this browser already told us who it is? */
+  currentEmployer: () => req<{ employer: EmployerIdentity | null }>(`/api/employers`),
+
+  /** Identify the employer. No password — see the route's own note. */
+  registerEmployer: (body: EmployerIdentity) =>
+    req<{ employer: EmployerIdentity }>(`/api/employers`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** Unlock one candidate's contact details. Writes an audit row server-side. */
+  revealContact: (slug: string) =>
+    req<RevealedContact>(`/api/talent/${encodeURIComponent(slug)}/contact`, { method: "POST" }),
+
+  /**
+   * Where the candidate's PDF is served from. A normal same-origin URL, not a
+   * signed storage link: the route re-checks the employer on every request, so
+   * this stops working the moment the listing comes down.
+   */
+  talentResumeUrl: (slug: string) => `/api/talent/${encodeURIComponent(slug)}/resume`,
 };

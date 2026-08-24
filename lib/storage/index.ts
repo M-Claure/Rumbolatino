@@ -1,6 +1,6 @@
 import "server-only";
 import { getEnv } from "@/lib/env";
-import { getSupabaseServerClient } from "@/lib/supabase/server";
+import { getSupabaseServerClient, getSupabaseServiceClient } from "@/lib/supabase/server";
 import { MemoryResumeFileStore, type ResumeFileStore } from "./resume-file-store";
 import { SupabaseResumeFileStore } from "./supabase-resume-file-store";
 
@@ -28,4 +28,24 @@ export function getResumeFileStore(): ResumeFileStore {
     return new SupabaseResumeFileStore(getSupabaseServerClient());
   }
   return getMemoryResumeFileStore();
+}
+
+/**
+ * The same store, bound to the SERVICE ROLE — the only way to read an object
+ * that belongs to someone else.
+ *
+ * There is exactly one legitimate caller: the talent directory's résumé
+ * download, where an employer has already identified themselves, already
+ * unlocked the contact, and already had that access written to
+ * `contact_reveals`. Everything else must keep using `getResumeFileStore()`,
+ * whose auth-scoped client is checked by the bucket's own RLS.
+ *
+ * Kept as a separate function rather than a flag on the existing one so that
+ * `grep -rn getServiceResumeFileStore` lists every place in the codebase that
+ * can read another user's file. Today that list has one entry.
+ */
+export function getServiceResumeFileStore(): ResumeFileStore {
+  const env = getEnv();
+  if (env.PERSISTENCE !== "supabase") return getMemoryResumeFileStore();
+  return new SupabaseResumeFileStore(getSupabaseServiceClient());
 }

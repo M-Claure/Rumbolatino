@@ -36,6 +36,21 @@ export const ANALYTICS_EVENTS = [
   "pdf_export_started",
   "resume_downloaded",
   "funnel_abandoned",
+  /**
+   * The publish card was shown after finalization — the denominator for opt-in
+   * rate. Emitted on display, not on consent.
+   */
+  "talent_publish_offered",
+  "talent_profile_published",
+  "talent_profile_unpublished",
+  "talent_search",
+  /**
+   * An employer unlocked a candidate's contact details. Deliberately carries no
+   * identifier for either side: `contact_reveals` in Postgres is the record of
+   * WHO saw WHOM, and it is an access log rather than a product metric. What
+   * belongs in analytics is only that a reveal happened.
+   */
+  "talent_contact_revealed",
 ] as const;
 
 export type AnalyticsEvent = (typeof ANALYTICS_EVENTS)[number];
@@ -61,6 +76,26 @@ export const SAFE_PROPERTY_KEYS = [
   "version",
   /** Nth time this question has been answered by this profile (1-based). */
   "attemptNumber",
+  /**
+   * Directory keys. Every one of these is a CLOSED SET defined in code — a
+   * category id, an availability enum, a years bucket, a result count, a
+   * boolean. None of them can carry free text.
+   *
+   * City and state are absent for the same reason: they are typed by hand in the
+   * funnel, so they are not a closed set however much they look like one.
+   *
+   * Note what is deliberately absent: `query`. A directory search box is typed
+   * into by hand, and people type names into search boxes — sending it would put
+   * "maria gutierrez houston" into analytics through the one field on this list
+   * that could hold it. The value of knowing what employers search for does not
+   * outweigh that, and category plus state already answers the question that
+   * actually drives product decisions.
+   */
+  "talentCategory",
+  "availability",
+  "yearsBucket",
+  "resultCount",
+  "hasQuery",
 ] as const;
 
 export type AnalyticsProps = Partial<Record<(typeof SAFE_PROPERTY_KEYS)[number], string | number | boolean>>;

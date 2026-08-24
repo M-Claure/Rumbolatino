@@ -28,6 +28,20 @@ export interface ResumeFileStore {
   putResumePdf(input: ResumePdfRef & { pdf: Uint8Array }): Promise<string>;
   /** Read the stored PDF back, or `null` when nothing is stored. */
   getResumePdf(input: ResumePdfRef): Promise<Uint8Array | null>;
+  /**
+   * Read by STORED PATH rather than by (user, profile, stage).
+   *
+   * Exists for the talent directory: an employer who has unlocked a contact gets
+   * the résumé's `resume_pdf_path` out of `talent_contacts` and has no business
+   * knowing whose user id it belongs to — the path is the capability, and it was
+   * handed over by an authorized reveal that wrote an audit row.
+   *
+   * Reading somebody else's object means the caller must hold a service-role
+   * store (`getServiceResumeFileStore()`); the auth-scoped one simply gets
+   * nothing back, because the bucket's RLS keys on the OWNER's `auth.uid()` and
+   * that policy is deliberately left untouched.
+   */
+  getResumePdfByPath(path: string): Promise<Uint8Array | null>;
   /** Remove it. Succeeds whether or not anything was there. */
   deleteResumePdf(input: ResumePdfRef): Promise<void>;
 }
@@ -80,7 +94,11 @@ export class MemoryResumeFileStore implements ResumeFileStore {
   }
 
   async getResumePdf(ref: ResumePdfRef): Promise<Uint8Array | null> {
-    const found = this.files.get(resumePdfPath(ref));
+    return this.getResumePdfByPath(resumePdfPath(ref));
+  }
+
+  async getResumePdfByPath(path: string): Promise<Uint8Array | null> {
+    const found = this.files.get(path);
     return found ? Uint8Array.from(found) : null;
   }
 

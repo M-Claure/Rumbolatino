@@ -35,6 +35,9 @@ app/api/*  (route handlers: auth → RATE LIMIT / SPEND CAP → validate → ser
 lib/services/usage-guard.ts  (lib/rate-limit/* · lib/spend/*)
    │
 lib/services/answer-pipeline.ts · lib/resume/resume-generator.ts · lib/skills/*
+lib/services/talent-publish.ts · lib/services/talent-directory.ts
+   │                                             │
+lib/talent/*  (taxonomy · classifier · projection)  ← PURE, no I/O, no model
    │
 lib/question-engine/*  (completeness-engine, question-catalog, prioritizer, planner)  ← PURE, no I/O
    │                                             │
@@ -113,12 +116,13 @@ the same ceiling.
 | `lib/env.ts` | Zod-validated, `server-only` config. Secrets never reach the client |
 | `lib/brand/` | multi-brand system: configs · registry · pure host resolution · `:root` theme emitter · server/client accessors |
 | `components/marketing/` | branded surfaces: shared hero + per-brand headers, dispatched via a registry |
-| `lib/repositories/` | `Store` interface + `MemoryStore` (dev/tests) + `SupabaseStore` |
+| `lib/repositories/` | `Store` interface + `MemoryStore` (dev/tests) + `SupabaseStore`; `TalentDirectoryStore` is separate — a cross-user query surface with service-role semantics |
 | `lib/storage/` | `ResumeFileStore` interface + `MemoryResumeFileStore` + Supabase Storage impl — one saved résumé PDF per improvement round |
 | `lib/profile-state.ts` | Assembles `ResumeProfileState`, redacts PII, computes completeness |
 | `lib/question-engine/` | completeness · catalog · prioritizer · adaptive planner · funnel progress |
 | `lib/ai/` | `AIProvider` abstraction, `MockAIProvider`, `AzureOpenAIProvider`, prompts, **Zod schemas** |
 | `lib/skills/` | evidence-backed inference + confirm/reject/edit lifecycle |
+| `lib/talent/` | directory taxonomy (code constants) · deterministic classifier · résumé→profile projection with the public/contact split |
 | `lib/services/answer-pipeline.ts` | the spec §9 answer pipeline |
 | `lib/resume/` | generator · HTML renderer · PDF (two renderers: puppeteer local, `@sparticuz/chromium` serverless) · **artifact writer** (saves the PDF on every generation) · source tracing · **analyzer** (improvement loop) · **proofreader** (final spelling/grammar/format pass before finalize) |
 | `lib/rate-limit/` | pure policy (limits + keys) · `RateLimiter` iface · memory/no-op/Postgres impls |
@@ -270,6 +274,149 @@ now bound it, and they are on or off together.
   bill just as much. A ledger row is bookkeeping; a résumé the user already paid for
   must not fail because the write was slow.
 
+## Bolsa de Talento (the opt-in talent directory)
+
+After a résumé is **finalized**, the user may publish a profile that employers can
+search (`/empleadores`, `/talento/[slug]`). Both sides stay accountless: a job
+seeker gives their information to get a résumé, an employer gives theirs to get a
+contact. No payments, no matching, no messaging.
+
+The job seeker's whole involvement is **one checkbox in a popup** after they
+finalize. Everything else is derived. Any change that adds a question to that
+moment is a regression — it sits between someone and the PDF they came for.
+
+**The profile is a PROJECTION, not a second capture surface.**
+`lib/talent/talent-projection.ts` reads `GeneratedResume` — which has already been
+filtered to `confirmed`/`edited` entries and skills and source-traced — plus
+`PersonalInformation`. So the directory inherits every résumé safety invariant for
+free, and there is no code path from raw capture to a public page. **Nothing in
+the directory calls a model**: the category comes from a keyword classifier
+(`lib/talent/classify.ts`), so publishing is free and keeps working when
+`AI_SPEND_CAP_DAILY_USD` is reached.
+
+- **Nothing is readable by `anon`.** Postgres RLS is ROW-level: it cannot say
+  "these columns are public and those are not", so a table with a public select
+  policy is an unauthenticated API over *every* column — including ones added
+  later by someone who did not read the comment. Instead the public shape is a
+  FUNCTION SIGNATURE. `talent_search` / `talent_profile_public` are
+  security-definer functions whose `returns table` clause enumerates, by name,
+  every field an employer may see, and they are granted to `service_role` alone.
+  Adding a column to `talent_profiles` exposes nothing until someone also widens
+  that clause — a visible, reviewable diff.
+- **Contact PII is a separate table**, not more columns. `talent_contacts` (with
+  `employers` and `contact_reveals`) has RLS on and **no policies at all**, the
+  same pattern `0009_usage_limits.sql` uses. Only the reveal path can name the
+  email column, so a bug in the search path cannot leak what the search path
+  cannot select. The **manage token lives there too** — a credential that can take
+  a listing down must not be one column-addition away from being public.
+- **The public/contact split is a RETURN TYPE.** `projectTalentProfile` returns
+  `{ public, contact }` as two objects for two tables; `TalentProfilePublic` has
+  no contact field to write to. `tests/unit/talent-projection.test.ts` asserts the
+  exact key set, so *any* new field on that type fails the test until someone
+  decides, in a diff, that it is safe to show the whole internet.
+  The FULL NAME is public (the popup says so plainly); the email, phone and PDF
+  path are not, and leave `talent_contacts` only through an audited reveal.
+- **Publishing is a SEPARATE consent.** `termsAcceptedAt` covers building a
+  private document; `publishConsentAt` + `publishConsentVersion`
+  (`PUBLISH_TERMS_VERSION`) cover putting a name and a work history where
+  strangers can read it. Never infer one from the other. Consent is stamped only
+  *after* the write succeeds.
+- **Three gates, enforced in the service and not only in the UI**
+  (`lib/services/talent-publish.ts`): the résumé must be finalized, must have been
+  generated, and must have a contact channel. A listing nobody can reach is pure
+  exposure — it discloses a name, a city and a work history and returns nothing.
+- **The publish step is ONE checkbox.** A popup
+  (`components/talent/PublishDialog.tsx`) appears once the résumé is finalized,
+  names exactly what employers get — full name, email, phone, the PDF — and takes
+  a single consent, then the user carries on to their download. "No, gracias" is
+  weighted equally with "Continuar"; an opt-in that is awkward to decline is not
+  an opt-in. A decline is remembered in `localStorage` per profile so it does not
+  nag on reload.
+- **The filter facets are DERIVED, not asked.** Category, seniority and
+  availability come from the finished résumé (`suggestCategory`,
+  `estimateYearsBucket`, and `flexible` respectively) because three more
+  dropdowns at the download screen cost opt-ins. Both estimators are deliberately
+  conservative — `suggestCategory` falls back to `otro` rather than guessing, and
+  `estimateYearsBucket` understates when the free-text dates do not parse. A
+  filter that is too broad costs an employer a scroll; one that overstates
+  seniority is a false claim about a person. Re-publishing re-derives them, so
+  fixing the résumé fixes the listing.
+- **Seniority is a BUCKET, never a number.** An exact figure plus a graduation
+  year is an age, which this product refuses to collect at all. For the same
+  reason the filter set is closed — free text, category, city, state,
+  availability. No filter may proxy for a protected class; see
+  `ALLOWED_FILTER_KEYS` and the discipline note in `lib/talent/taxonomy.ts`.
+- **Browsing NEVER mints a guest session.** Every other route calls
+  `resolveUserId()`, which creates an `auth.users` row when there is none. The
+  directory is the one surface strangers and crawlers are expected to hit, so it
+  uses `resolveExistingUserId()` (the read that does not mint) and falls back to
+  an IP-keyed rate limit. `POST /api/employers` is the single exception, and only
+  because someone just typed their name into it.
+- **The search guard lives in the service, not the route.**
+  `lib/services/talent-directory.ts` carries the rate limit and the analytics, and
+  both `/api/talent/search` and the server-rendered `/empleadores` go through it —
+  the page must not be a way around the guard its own API has.
+- **Reveal and audit are ONE statement.** `talent_reveal_contact` inserts the
+  `contact_reveals` row and returns the contact together, so contact data cannot
+  be returned without the access being recorded. Two calls from a route could
+  always drop the second.
+- **The résumé is streamed, not signed.** `GET /api/talent/:slug/resume` re-checks
+  the employer on every request rather than handing out a signed storage URL — a
+  signed URL is a forwardable bearer token that outlives the session and the
+  listing. It reaches past the bucket's RLS with `getServiceResumeFileStore()`,
+  which is deliberately a separate function so `grep -rn
+  getServiceResumeFileStore` lists every place that can read another user's file.
+  The bucket's own policies are untouched.
+- **`contact_reveal` is the limit that matters** — the only one in the product
+  protecting people rather than infrastructure. `employer_register` is capped at
+  or below it so minting fresh "employers" is not a way around the per-identity
+  reveal limit.
+- **The directory lives on the SAME deployment, at `/empleadores`.** It is simply
+  not linked from anywhere in the builder — no header entry, no footer, no CTA —
+  so a job seeker never stumbles into it, and an employer reaches it by being
+  given the URL. An earlier version split the two by host (`EMPLOYER_HOSTS`, a
+  middleware rewrite, a second header); it was removed as more moving parts than
+  the separation was worth. If a dedicated domain is ever wanted, point it at the
+  same Vercel project — no code change is needed for `/empleadores` to answer on it.
+- **`/empleadores` is indexable; `/talento/[slug]` is `noindex`.** Being findable
+  on Google must not make every listing a permanent cached record of a real
+  person's employment situation. Unknown, unpublished and expired slugs all render
+  the same 404 — distinguishing them would confirm someone was once listed, which
+  is what unpublishing is meant to undo.
+- **Search is accent-insensitive, and Postgres does not do that for free.** The
+  stock `spanish` config stems but does not fold accents, so `reposteria` would
+  not find `Repostería` — a silent failure for an audience that mostly types
+  without accents. `0010` creates a `spanish_unaccent` configuration (requires the
+  `unaccent` extension) and uses it on **both** the stored document and the query;
+  folding one side only reintroduces the mismatch. `MemoryTalentStore` folds via
+  `normalizeForMatch`, and `tests/unit/talent-directory.test.ts` pins the contract
+  for both.
+- **`search_tsv` is generated by `mcv_talent_search_document`, not inline.** A
+  generated column must be strictly IMMUTABLE, and `array_to_string` is declared
+  **STABLE** (`provolatile => 's'`) because for a general `anyarray` the element
+  output function need not be immutable. The inline expression therefore fails
+  with `42P17: generation expression is not immutable`. The wrapper is honest
+  rather than a trick — its parameters are concretely `text[]`, whose output
+  function is immutable — so do not widen them to `anyarray`.
+- **Listings expire after 90 days**, enforced in the read functions' `WHERE`
+  clause rather than by a cron, so a profile disappears even if no scheduled job
+  runs. Unpublishing sets a status instead of deleting: `contact_reveals`
+  references the row, and a delete would erase the record of who already has the
+  person's details. A re-publish keeps the slug (a URL already sent to an employer
+  must not 404) and the manage token (it may already be in an email).
+- **`getTalentStore()` fails CLOSED**, unlike the rate limiter and spend ledger,
+  which fail open. An unenforced counter still serves the user correctly; a
+  directory with no service role cannot write the contact row, so carrying on
+  would publish a name and a work history with no way to reach the person and no
+  token to take it down with.
+
+**Still missing (Phase 4):** emailing the manage link — today the token is shown
+once, on the publish response, and a user who never copies it and then clears
+cookies cannot unpublish. That needs a mail dependency the repo does not have and
+should be treated as required, not polish. Also outstanding: the
+`/perfil/gestionar?token=…` page, renewal, and moderation tooling for the
+`blocked` status.
+
 ## Safety rules (enforced in CODE, not just prompts)
 
 - Inferred skills are **always** created with status `suggested`; only an explicit
@@ -372,7 +519,7 @@ Rules that follow:
   both packages resolve with the API the launch code uses. That is the guard against
   a deploy-only break.
 
-## Database schema (4 tables)
+## Database schema (4 résumé tables + 4 directory tables)
 
 ```
 funnel        one row per résumé — profile columns + the eight capture sections,
@@ -387,6 +534,11 @@ iteration_3   /   naming the PDF that round produced (resume_pdf)
 Plus two infrastructure tables from `0009_usage_limits.sql` — `rate_limits` and
 `ai_spend` — which hold no user content, have RLS on with **no policies**, and are
 reachable only through functions granted to `service_role`. See **Usage limits**.
+
+And four from `0010_talent_directory.sql` — `talent_profiles` (owner-only RLS; the
+public view of it is two security-definer functions, never a policy),
+`talent_contacts`, `employers` and `contact_reveals` (RLS on, no policies,
+service-role only). See **Bolsa de Talento**.
 
 `0007_simplified_schema.sql` collapsed 13 tables into five;
 `0008_resume_pdf_per_stage.sql` dropped `resume_pdfs` for the fifth. The rules that
@@ -461,6 +613,10 @@ is missing; improve wording without changing meaning; return valid JSON only.
   skill status/confirm/reject, prohibited inference, readiness, generation from
   confirmed-only data, no-invented-facts, AI schema validation, analytics scrubbing,
   brand resolution precedence, and per-brand palette completeness + WCAG contrast.
+  For the directory: the projection's exact public key set (so a new field on
+  `TalentProfilePublic` fails until someone decides it is publishable), the
+  publish gates and consent stamping, taxonomy/classifier determinism, listing
+  expiry, reveal auditing, and the rate-limit policy.
 - **E2E** (`tests/e2e/`, Playwright): the seven flows in spec §19, driven through
   the API against a production build in mock/memory mode.
 - Always mock the AI provider in tests (`MockAIProvider`) — it obeys the same
@@ -504,8 +660,12 @@ All via environment variables; never commit secrets. See `.env.example`.
 
 ## Out of scope (do not add in milestone 1)
 
-Job applications, job matching, cover letters, interview simulation, LinkedIn
-publishing, and decorative multi-template themes. (A minimal React UI exists, with no
+Job applications, job **matching** or ranking, cover letters, interview
+simulation, LinkedIn publishing, and decorative multi-template themes. Note the
+talent directory is **not** matching: it is search over profiles their owners
+chose to publish, with no scoring, no recommendations and no messaging — adding
+any of those is a new product decision, not an extension of it. Payments and a
+booking/scheduling flow are also out. (A minimal React UI exists, with no
 login at all — see "No accounts" above; a polished, design-faithful UI is future
 work.
 Note: the **brand** system is not a "theme" system — it swaps marketing identity

@@ -40,6 +40,8 @@ export type CreateProfileInput = Partial<
     | "finalizedAt"
     | "termsAcceptedAt"
     | "termsVersion"
+    | "publishConsentAt"
+    | "publishConsentVersion"
   >
 >;
 export type UpdateProfileInput = CreateProfileInput;

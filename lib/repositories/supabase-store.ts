@@ -292,6 +292,8 @@ export class SupabaseStore implements Store {
       finalized_at: profile.finalizedAt,
       terms_accepted_at: profile.termsAcceptedAt,
       terms_version: profile.termsVersion,
+      publish_consent_at: profile.publishConsentAt,
+      publish_consent_version: profile.publishConsentVersion,
       created_at: profile.createdAt,
       updated_at: profile.updatedAt,
     });
@@ -325,6 +327,8 @@ export class SupabaseStore implements Store {
     set("finalized_at", patch.finalizedAt);
     set("terms_accepted_at", patch.termsAcceptedAt);
     set("terms_version", patch.termsVersion);
+    set("publish_consent_at", patch.publishConsentAt);
+    set("publish_consent_version", patch.publishConsentVersion);
 
     const { data, error } = await this.client
       .from("funnel")
@@ -722,6 +726,8 @@ function toProfile(row: FunnelRow): ResumeProfile {
     finalizedAt: r.finalized_at ?? null,
     termsAcceptedAt: r.terms_accepted_at ?? null,
     termsVersion: r.terms_version ?? null,
+    publishConsentAt: r.publish_consent_at ?? null,
+    publishConsentVersion: r.publish_consent_version ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

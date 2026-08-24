@@ -29,10 +29,15 @@ export class SupabaseResumeFileStore implements ResumeFileStore {
   }
 
   async getResumePdf(ref: ResumePdfRef): Promise<Uint8Array | null> {
-    const path = resumePdfPath(ref);
+    return this.getResumePdfByPath(resumePdfPath(ref));
+  }
+
+  async getResumePdfByPath(path: string): Promise<Uint8Array | null> {
     const { data, error } = await this.client.storage.from(RESUME_BUCKET).download(path);
     // A missing object is a normal state (nothing generated yet, or the write
-    // failed earlier), not an error — the caller re-renders instead.
+    // failed earlier), not an error — the caller re-renders instead. It is also
+    // what an auth-scoped client sees for somebody else's object, since the
+    // bucket policy denies it: the same "null" either way, on purpose.
     if (error || !data) return null;
     return new Uint8Array(await data.arrayBuffer());
   }

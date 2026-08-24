@@ -1,0 +1,172 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { headers } from "next/headers";
+import { getBrandConfig } from "@/lib/brand/registry";
+import { getActiveBrandId } from "@/lib/brand/server";
+import { searchDirectorySafely } from "@/lib/services/talent-directory";
+import { TalentSearchQuery } from "@/lib/validation/api-schemas";
+import { TalentCard } from "@/components/talent/TalentCard";
+import { TalentFilters } from "@/components/talent/TalentFilters";
+import type { TalentSearchFilters } from "@/types";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * The employer side: a searchable directory of people who chose to be found.
+ *
+ * ── Indexing ────────────────────────────────────────────────────────────────
+ * THIS page is indexable — it is how an employer discovers the directory at all,
+ * and it lists nobody in particular above the fold that a crawler could harvest
+ * as a person. Individual profiles at `/talento/[slug]` are `noindex`, so being
+ * findable on Google never turns into being bulk-downloadable from it.
+ *
+ * ── Why the results are read server-side ───────────────────────────────────
+ * Through `searchDirectorySafely`, which carries the same rate limit and the
+ * same analytics as `/api/talent/search` — the page must not be a way around the
+ * guard its own API has. "Safely" because this is a public URL: an unconfigured
+ * directory or a tripped limit should render an explanation, not a 500.
+ */
+
+export function generateMetadata(): Metadata {
+  const brand = getBrandConfig(getActiveBrandId());
+  return {
+    title: `Contrata talento | ${brand.name}`,
+    description:
+      "Encuentra personas capacitadas y listas para trabajar. Busca por área, ciudad y disponibilidad.",
+  };
+}
+
+export default async function EmpleadoresPage({
+  searchParams,
+}: {
+  searchParams: Record<string, string | string[] | undefined>;
+}) {
+  // Anything not on the schema is dropped rather than passed through; a bad
+  // value falls back to an unfiltered search instead of erroring a public page.
+  const parsed = TalentSearchQuery.safeParse(searchParams);
+  const filters: TalentSearchFilters = parsed.success ? parsed.data : {};
+
+  const result = await searchDirectorySafely({ ...filters, limit: 24 }, headers());
+
+  return (
+    <main className="mx-auto flex min-h-page max-w-5xl flex-col gap-6 px-6 py-10">
+      <header className="flex flex-col gap-2">
+        <h1 className="text-2xl font-bold text-text-primary sm:text-3xl">
+          Encuentra a quien necesitas
+        </h1>
+        <p className="max-w-2xl text-base leading-snug text-text-secondary">
+          Estas personas terminaron su currículum y pidieron aparecer aquí. Busca por área,
+          ciudad y disponibilidad. Para ver sus datos de contacto solo necesitas decirnos quién
+          eres.
+        </p>
+      </header>
+
+      <TalentFilters filters={filters} />
+
+      {result === null ? (
+        <EmptyState
+          icon="⚠️"
+          title="No pudimos cargar el directorio"
+          body="Hubo un problema de nuestro lado. Vuelve a intentarlo en un momento."
+        />
+      ) : result.total === 0 ? (
+        <EmptyState
+          icon="🔍"
+          title="No encontramos a nadie con esos filtros"
+          body="Prueba con menos filtros, otra ciudad, o busca solo por área."
+        />
+      ) : (
+        <>
+          <p className="text-sm text-text-secondary">
+            {result.total === 1
+              ? "1 persona encontrada"
+              : `${result.total} personas encontradas`}
+          </p>
+          <ul className="grid gap-4 sm:grid-cols-2">
+            {result.profiles.map((profile) => (
+              <li key={profile.slug}>
+                <TalentCard profile={profile} />
+              </li>
+            ))}
+          </ul>
+          {result.total > result.profiles.length && (
+            <Pager filters={filters} shown={result.profiles.length} total={result.total} />
+          )}
+        </>
+      )}
+
+      {/*
+        The only link between the two sides, and it points employer → builder,
+        never the other way: nothing on the résumé builder links here.
+      */}
+      <footer className="mt-4 border-t border-border pt-6">
+        <p className="text-sm text-text-secondary">
+          ¿Buscas trabajo?{" "}
+          <Link href="/" className="font-medium text-accent-dark hover:underline">
+            Crea tu currículum gratis
+          </Link>{" "}
+          y aparece en esta lista.
+        </p>
+      </footer>
+    </main>
+  );
+}
+
+function EmptyState({ icon, title, body }: { icon: string; title: string; body: string }) {
+  return (
+    <div className="flex flex-col items-center gap-2 rounded-2xl border border-border bg-white px-6 py-12 text-center">
+      <span className="text-3xl" aria-hidden>
+        {icon}
+      </span>
+      <p className="text-base font-bold text-text-primary">{title}</p>
+      <p className="max-w-md text-sm leading-snug text-text-secondary">{body}</p>
+    </div>
+  );
+}
+
+/**
+ * Offset paging as plain links, matching the form above: the whole state of this
+ * page lives in the query string, so a page of results can be shared as a URL.
+ */
+function Pager({
+  filters,
+  shown,
+  total,
+}: {
+  filters: TalentSearchFilters;
+  shown: number;
+  total: number;
+}) {
+  const offset = filters.offset ?? 0;
+  const params = (next: number) => {
+    const q = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (key === "offset" || key === "limit" || value === undefined || value === "") continue;
+      q.set(key, String(value));
+    }
+    if (next > 0) q.set("offset", String(next));
+    return `/empleadores?${q.toString()}`;
+  };
+
+  return (
+    <nav className="flex items-center justify-between gap-4 text-sm">
+      {offset > 0 ? (
+        <Link href={params(Math.max(offset - 24, 0))} className="font-medium text-accent-dark hover:underline">
+          ← Anteriores
+        </Link>
+      ) : (
+        <span />
+      )}
+      <span className="text-text-secondary">
+        {offset + 1}–{offset + shown} de {total}
+      </span>
+      {offset + shown < total ? (
+        <Link href={params(offset + 24)} className="font-medium text-accent-dark hover:underline">
+          Siguientes →
+        </Link>
+      ) : (
+        <span />
+      )}
+    </nav>
+  );
+}

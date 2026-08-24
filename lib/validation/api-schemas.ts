@@ -21,6 +21,7 @@ import {
   PROJECT_TYPES,
   RESUME_SECTIONS,
 } from "@/types/domain";
+import { TALENT_AVAILABILITIES, TALENT_CATEGORY_IDS } from "@/types/talent";
 
 const section = z.enum(RESUME_SECTIONS);
 const nonEmpty = z.string().trim().min(1);
@@ -302,4 +303,70 @@ export const RecordIterationAnswerBody = z.object({
   questionId: z.string().min(1).max(120),
   question: z.string().min(1).max(2000),
   answer: z.string().max(8000).nullish(),
+});
+
+
+/**
+ * Publishing a profile to the talent directory.
+ *
+ * ONE field: the consent. Everything else the listing needs — which trade it is
+ * filed under, how much experience it shows, when the person can start — is
+ * derived server-side from the résumé they just finished, because asking three
+ * more questions at the moment someone is trying to download their CV is how you
+ * lose them. See `publishTalentProfile`.
+ *
+ * `acceptPublishTerms` is `literal(true)` for the same reason
+ * `CreateProfileBody.acceptTerms` is: the route cannot reach a write without it,
+ * so consent is structural rather than a check somebody might skip. It is a
+ * SEPARATE consent from the one given at sign-up — that covered building a
+ * private résumé, this covers publishing one. See `PUBLISH_TERMS_VERSION`.
+ */
+export const PublishTalentBody = z.object({
+  acceptPublishTerms: z.literal(true, {
+    errorMap: () => ({
+      message: "Marca la casilla para publicar tu perfil",
+    }),
+  }),
+});
+
+
+/**
+ * Directory search parameters, parsed from the query string.
+ *
+ * The allow-list here is the whole filter surface, and it is short by design —
+ * see `ALLOWED_FILTER_KEYS` in `lib/talent/taxonomy.ts` for why no filter may
+ * proxy for a protected class. Anything not named here is ignored rather than
+ * passed through.
+ *
+ * `limit` is capped at 60 to match `least(coalesce(p_limit, 24), 60)` inside
+ * `talent_search`. The database enforces it regardless; repeating it here just
+ * turns an over-large request into a clear 422 instead of a silent truncation.
+ */
+export const TalentSearchQuery = z.object({
+  query: z.string().trim().max(120).optional(),
+  category: z.enum(TALENT_CATEGORY_IDS).optional(),
+  state: z.string().trim().max(60).optional(),
+  city: z.string().trim().max(120).optional(),
+  availability: z.enum(TALENT_AVAILABILITIES).optional(),
+  limit: z.coerce.number().int().min(1).max(60).optional(),
+  offset: z.coerce.number().int().min(0).max(5000).optional(),
+});
+
+/**
+ * Who is asking to see a contact.
+ *
+ * Symmetric with `CreateProfileBody`: the job seeker gives us a name and a way
+ * to reach them before we build their résumé, and an employer gives us the same
+ * before we hand over anyone's phone number. Still no password and no account —
+ * this is identification, not authentication, and it exists so that every reveal
+ * in `contact_reveals` has a name attached to it.
+ */
+export const CreateEmployerBody = z.object({
+  company: z.string().trim().min(1, { message: "Escribe el nombre de tu empresa" }).max(120),
+  contactName: z.string().trim().min(1, { message: "Escribe tu nombre" }).max(120),
+  email: z
+    .string()
+    .trim()
+    .max(160)
+    .refine(isEmail, { message: "Escribe un correo electrónico válido" }),
 });

@@ -5,6 +5,7 @@ import { api, type AnalysisImprovement, type ResumeAnalysis } from "@/lib/client
 import { MAX_RESUME_ITERATIONS } from "@/lib/config/limits";
 import { AiBubble, Button, Card, InstructionBanner, Spinner } from "./primitives";
 import { EditableReview } from "./EditableReview";
+import { PublishDialog } from "./talent/PublishDialog";
 
 /** Unique key per improvement (deep-dives share a questionId but differ by entryId). */
 const improvementKey = (i: AnalysisImprovement) => `${i.questionId}:${i.entryId ?? ""}`;
@@ -274,6 +275,12 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
           )}
         </div>
       )}
+
+      {/* The directory opt-in, as a popup over the finished résumé. Gated on
+          `finalizedAt`: a listing built from a half-answered funnel is not
+          something anyone would choose on purpose, and the publish route
+          enforces the same gate server-side. */}
+      {finalizedAt && <PublishDialog profileId={profileId} />}
 
       {/* Analysis + improvement loop */}
       <Card>

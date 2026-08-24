@@ -23,6 +23,8 @@ function profile(over: Partial<ResumeProfile> & { id: string }): ResumeProfile {
     finalizedAt: null,
     termsAcceptedAt: null,
     termsVersion: null,
+    publishConsentAt: null,
+    publishConsentVersion: null,
     createdAt: "2026-08-01T10:00:00.000Z",
     updatedAt: "2026-08-01T10:00:00.000Z",
     ...over,
