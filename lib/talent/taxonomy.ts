@@ -191,8 +191,13 @@ export const YEARS_BUCKET_LABELS: Record<TalentYearsBucket, string> = {
 
 /**
  * ── Filter discipline ───────────────────────────────────────────────────────
- * The filters an employer may narrow by are exactly: free text, category,
+ * The filters an employer may narrow by are exactly: a name, category,
  * state, city, availability. That list is short on purpose.
+ *
+ * `query` is a NAME query, not free text over the résumé — `0014` narrowed it to
+ * `name_tsv` alone. The key keeps its generic name because it is a URL
+ * parameter that employers may already have bookmarked; the meaning is in
+ * `mcv_talent_name_query` and mirrored by `nameSearchTokens`.
  *
  * This product refuses to collect age, photo, marital status, religion, race,
  * health or immigration status — see the safety rules in CLAUDE.md. A filter is

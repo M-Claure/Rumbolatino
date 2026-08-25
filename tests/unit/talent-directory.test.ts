@@ -117,27 +117,25 @@ describe("search", () => {
     expect((await talent.search({ availability: "un_mes" })).total).toBe(1);
   });
 
-  it("matches free text against the headline and the skills", async () => {
-    expect((await talent.search({ query: "cocinera" })).total).toBe(1);
-    expect((await talent.search({ query: "reposteria" })).total).toBe(1);
+  it("does NOT match the résumé's own words — the box is names only", async () => {
+    // `0014` narrowed the free-text box to `name_tsv`. The trade a person does
+    // is reachable through the category filter, which is a closed list derived
+    // from the résumé, not through words they happened to type. Both of these
+    // matched somebody before that migration; that they no longer do is the
+    // feature, so it gets a test rather than being left to the SQL comment.
+    expect((await talent.search({ query: "cocinera" })).total).toBe(0);
+    expect((await talent.search({ query: "reposteria" })).total).toBe(0);
+    // The same person is still findable — by area, which is what that control is
+    // for. This is the assertion that makes the one above a narrowing and not a
+    // regression.
+    expect((await talent.search({ category: "gastronomia" })).total).toBe(1);
   });
 
-  it("finds the same person whether or not the accent was typed", async () => {
-    // Not a nicety. This audience writes Spanish on phone keyboards, where the
-    // accented vowel is a long-press away, and many people simply do not use
-    // accents. Postgres does NOT do this for free: the stock `spanish` text
-    // search config stems but does not fold accents, so the migration builds a
-    // `spanish_unaccent` configuration and uses it on BOTH the stored document
-    // and the query. This test pins the same contract for the memory store, so
-    // the two implementations cannot disagree about it.
-    for (const typed of ["reposteria", "repostería", "REPOSTERIA", "Repostería"]) {
-      expect((await talent.search({ query: typed })).total, typed).toBe(1);
-    }
-  });
-
-  // ── Name search (0012) ────────────────────────────────────────────────────
+  // ── Name search (0012, narrowed to the ONLY matcher by 0014) ──────────────
   // Typing a name used to find nobody and say nothing about why: the name is not
-  // in `search_tsv`. `name_tsv` is a second, UNSTEMMED matcher, ORed with it.
+  // in `search_tsv`. `name_tsv` was added as a second, UNSTEMMED matcher ORed
+  // with it, and `0014` then dropped the other half — so this is now the whole
+  // behaviour of the search box.
   //
   // The three rows seeded above are all named "María G.", which is what the
   // counts here are against: these tests use `Lucía`/`Lucio` so a first-name
@@ -157,7 +155,14 @@ describe("search", () => {
     });
 
     it("ignores the accent and the case, in both directions", async () => {
-      for (const typed of ["lucia fuentes", "LUCÍA FUENTES", "LuCia Fuentes"]) {
+      // Not a nicety. This audience writes Spanish on phone keyboards, where the
+      // accented vowel is a long-press away, and many people simply do not use
+      // accents — including in their own surname. Postgres does NOT do this for
+      // free: `simple_unaccent` (0012) is `simple` with `unaccent` in front, and
+      // it is applied to BOTH the stored name and the query, because folding one
+      // side only reintroduces the mismatch. `nameSearchTokens` is the mirror
+      // that keeps this store in agreement, which is what this test pins.
+      for (const typed of ["lucia fuentes", "LUCÍA FUENTES", "LuCia Fuentes", "Fuéntes"]) {
         expect((await talent.search({ query: typed })).total, typed).toBe(1);
       }
     });
@@ -171,22 +176,28 @@ describe("search", () => {
     });
 
     it("matches a name only from its start, never from the middle", async () => {
-      // The distinction between the two matchers behind one box: résumé text is
-      // matched by containment, a name by PREFIX. Without that, "ere" would list
-      // Ferrer, and a name box that matches word interiors returns strangers.
+      // PREFIX, not containment. A box that matched word interiors would list
+      // Ferrer for "ere" — strangers, returned for a query nobody would read as
+      // naming them.
       expect((await talent.search({ query: "errer" })).total).toBe(0);
       expect((await talent.search({ query: "ferrer" })).total).toBe(1);
     });
 
-    it("drops one-character tokens instead of prefixing them", async () => {
-      // `a:*` would match a large share of any name column, which turns a single
-      // keystroke into a way to page out the directory. Nothing survives the
-      // floor here, so this is an unfiltered search, not a match-everything one.
-      expect((await talent.search({ query: "a" })).total).toBe(3 + 2);
-    });
-
-    it("still finds people by what they do, which is the other half of the box", async () => {
-      expect((await talent.search({ query: "cocinera" })).total).toBe(1);
+    it("matches NOBODY when nothing survives the two-character floor", async () => {
+      // `a:*` would match a large share of any name column, so a single
+      // keystroke would be a way to page out the whole directory. The floor in
+      // `mcv_talent_name_query` drops such a token, the query becomes NULL, and
+      // the predicate reads that as "no name matches" — NOT as "match
+      // everything". An empty box still lists everyone on purpose; `a` is
+      // somebody trying to search, and it is answered as a search that found
+      // nobody. `/empleadores` renders its own message for this case rather than
+      // an unexplained empty table.
+      expect((await talent.search({ query: "a" })).total).toBe(0);
+      expect((await talent.search({ query: "a b" })).total).toBe(0);
+      // The blank-box contrast, which is the whole point of the distinction.
+      expect((await talent.search({ query: "" })).total).toBe(3 + 2);
+      expect((await talent.search({ query: "   " })).total).toBe(3 + 2);
+      expect((await talent.search({})).total).toBe(3 + 2);
     });
 
     it("obeys the other filters, so a name cannot reach past them", async () => {

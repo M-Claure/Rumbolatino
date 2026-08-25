@@ -375,6 +375,15 @@ function blankAsAbsent<T extends z.ZodTypeAny>(schema: T) {
  * turns an over-large request into a clear 422 instead of a silent truncation.
  */
 export const TalentSearchQuery = z.object({
+  /**
+   * A person's NAME, and only that. Since `0014` the free-text box no longer
+   * matches the résumé document (`search_tsv`); a trade is searched through
+   * `category`, a closed list derived from the résumé. The parameter keeps its
+   * generic name because employers may have the URL bookmarked — see
+   * `mcv_talent_name_query` for the matching rules and `nameSearchTokens` for
+   * their TypeScript mirror. A value whose every token is under two characters
+   * matches nobody, which is not the same as an absent one.
+   */
   query: blankAsAbsent(z.string().trim().max(120).optional()),
   category: blankAsAbsent(z.enum(TALENT_CATEGORY_IDS).optional()),
   availability: blankAsAbsent(z.enum(TALENT_AVAILABILITIES).optional()),

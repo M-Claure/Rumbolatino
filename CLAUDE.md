@@ -408,7 +408,7 @@ the directory calls a model**: the category comes from a keyword classifier
   `mcv_distance_miles` in SQL and `distanceMiles` in TS must stay in agreement.
 - **Seniority is a BUCKET, never a number.** An exact figure plus a graduation
   year is an age, which this product refuses to collect at all. For the same
-  reason the filter set is closed — free text, category, city, state,
+  reason the filter set is closed — a name, category, city, state,
   availability. No filter may proxy for a protected class; see
   `ALLOWED_FILTER_KEYS` and the discipline note in `lib/talent/taxonomy.ts`.
 - **Browsing NEVER mints a guest session, and now never happens anonymously
@@ -487,24 +487,45 @@ the directory calls a model**: the category comes from a keyword classifier
   folding one side only reintroduces the mismatch. `MemoryTalentStore` folds via
   `normalizeForMatch`, and `tests/unit/talent-directory.test.ts` pins the contract
   for both.
-- **The free-text box searches two things, and names are the SECOND one.**
-  `0012` added `name_tsv` beside `search_tsv`, so an employer who knows who they
-  want can type a name. It is a separate column and a separate matcher, ORed in
-  `talent_search`, and it must stay that way: `search_tsv` uses
-  `spanish_unaccent`, which STEMS, and Spanish surnames are frequently trade
-  words — `Herrera`→`herrer` is the `oficios` keyword for herrería, `Flores`→`flor`
-  is floristry. Merged into one document, "herrero" returns everyone named
-  Herrera. So names are matched **unstemmed**, through a `simple_unaccent`
-  configuration, and by **prefix** (`gonz` finds González) via
-  `mcv_talent_name_query`, whose `nameSearchTokens` mirror in `lib/talent/text.ts`
-  keeps `MemoryTalentStore` in agreement. Tokens under two characters are dropped
-  rather than prefixed — `a:*` matches most of any name column, which would make
-  one keystroke a way to page out the directory.
-  Be clear about what this traded: it exposes no new field (the full name is
-  already on the card, the table and the profile page), but it turns "is this
-  particular person job-hunting?" from a paging exercise into one query, runnable
-  by someone's current employer. That was weighed and accepted; do not re-derive
-  it as a bug.
+- **The free-text box searches NAMES, and nothing else** (`0014`). One box, one
+  meaning. `0012` had added `name_tsv` beside `search_tsv` and ORed the two, so
+  the box matched either a person's name or the résumé's own words; `0014` dropped
+  the second half. An OR of two vocabularies cannot tell an employer *why* a row
+  came back, and the two collide by construction in Spanish: `search_tsv` uses
+  `spanish_unaccent`, which STEMS, and surnames are frequently trade words —
+  `Herrera`→`herrer` is the `oficios` keyword for herrería, `Flores`→`flor` is
+  floristry — so "Flores" returned the florists alongside the Flores family with
+  no ranking rule able to make that legible. The résumé half also surfaced people
+  for words they used in passing in a summary, which reads to an employer as a
+  claim of skill. **Searching by trade moved to the control built for it**: the
+  `Área` dropdown (`category`), a closed set derived from each résumé by
+  `suggestCategory`. Name matching is unchanged from `0012` — **unstemmed**
+  through `simple_unaccent`, by **prefix** (`gonz` finds González), ANDed across
+  tokens, via `mcv_talent_name_query`, whose `nameSearchTokens` mirror in
+  `lib/talent/text.ts` keeps `MemoryTalentStore` in agreement.
+  What this gives up, and it is real: a specific skill or certification is no
+  longer reachable as text, so an employer wanting an HVAC technician must pick
+  the surrounding (broad) category and read. If that needs answering, the answer
+  is a SECOND closed-list control, not free text merged back into the name box.
+- **A query with no token of two characters matches NOBODY, not everybody.**
+  `a:*` covers most of any name column, so answering `a` with the whole directory
+  would be a page-out dressed up as a result set. `mcv_talent_name_query` returns
+  NULL there and the predicate reads it as "no name matches"; a *blank* box still
+  lists everyone deliberately. `/empleadores` renders its own message for the
+  short-query case rather than an unexplained empty table, and
+  `tests/unit/talent-directory.test.ts` pins both sides of the distinction.
+- **Searching by name turns "is this person job-hunting?" into one query.** It
+  exposes no new field — the full name is already on the table and the profile
+  page, and `PublishDialog` says so before anyone opts in — but it makes a
+  targeted lookup cheap, including one run by somebody's current employer. That
+  was weighed and accepted when `0012` shipped; do not re-derive it as a bug. What
+  still stands: slugs keep their random suffix, so a URL cannot be guessed from a
+  name even once search has confirmed the name is listed.
+- **`search_tsv` is KEPT, unused, as the rollback to `0012`.** The column, its GIN
+  index and `mcv_talent_search_document` all remain; nothing queries them.
+  Restoring résumé-text search is re-running `0012`'s `talent_search` with no
+  backfill and no re-index, whereas dropping a generated column is the
+  irreversible direction. An index nothing uses is the cost of that option.
 - **`search_tsv` is generated by `mcv_talent_search_document`, not inline.** A
   generated column must be strictly IMMUTABLE, and `array_to_string` is declared
   **STABLE** (`provolatile => 's'`) because for a general `anyarray` the element

@@ -20,6 +20,13 @@ import { UseMyLocation } from "@/components/UseMyLocation";
  * filter would be a back door into the same information — see the filter
  * discipline note in `lib/talent/taxonomy.ts` before adding a field.
  *
+ * No free-text search over the résumé itself, since `0014`. The box in this form
+ * is a NAME box; searching by trade is the `Área` dropdown, a closed list derived from
+ * each résumé rather than words the person happened to type. What that gives up
+ * — a specific skill or certification is no longer reachable as text — is
+ * written down in the migration. If it needs answering, the answer is a second
+ * closed-list control, not free text merged back into the name box.
+ *
  * No AVAILABILITY dropdown either, and that one is a different argument: it is
  * not unsafe, it is empty. `talent-publish.ts` stamps every listing `flexible`
  * because the publish step is one checkbox and nobody is asked for a start date,
@@ -51,45 +58,42 @@ export function TalentFilters({
     <form method="GET" action="/empleadores" className="rounded-2xl border border-border bg-white p-4">
       <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {/*
-          The label spells out both things this box takes, and "personas" first.
-          On a page reached cold from a URL, a lone search box labelled "Buscar"
-          does not say what it searches, and the plausible guesses — empleos,
-          empresas, personas — are all things a hiring site could hold. Guessing
-          wrong returned nothing, silently, which reads as an empty directory
-          rather than a mis-aimed query.
+          This box takes ONE thing: a person's name (`0014`). Saying so is not
+          optional. A lone box labelled "Buscar" does not say what it searches,
+          and the plausible guesses on a hiring site — empleos, empresas,
+          personas — are all things it could plausibly hold; guessing wrong
+          returns nothing, silently, which reads as an empty directory rather
+          than a mis-aimed query. So the label names the input and the help text
+          says where to search by trade instead, because that capability moved
+          rather than disappearing: it is the `Área` dropdown to the right.
 
-          Two matchers sit behind it, and the help text names both in the user's
-          terms rather than by column: the résumé document (`search_tsv` —
-          headline, summary, skills, certifications, city, state) and the name
-          (`name_tsv`, added in 0012).
+          The placeholder is a NAME, only. It used to read "María González,
+          cocinera, HVAC…" and a stale example here is worse than none — it is an
+          instruction to type something that now matches nobody.
 
-          It does NOT mention that a partial name works, though it does
+          The help text promises whole names and delivers partials too
           (`mcv_talent_name_query` appends `:*` to every token, so `gonz` finds
-          González). That was a deliberate trim — the line reads better without a
-          worked example. The behaviour is a superset of what the text promises,
-          so nobody is misled by the omission; someone who types a whole name
-          gets what they expect, and someone who types half of one is pleasantly
-          surprised. Keep it that way round if this copy changes again: promising
-          less than the search does is safe, the reverse is not.
+          González). Keep that asymmetry in this direction if the copy changes
+          again: promising less than the search does is safe, the reverse is not.
         */}
         <div className="lg:col-span-2">
           <label className="block">
             <span className="text-sm font-semibold text-text-primary">
-              Buscar personas por nombre u oficio
+              Buscar una persona por su nombre
             </span>
             <input
               type="search"
               name="query"
               defaultValue={filters.query ?? ""}
-              placeholder="María González, cocinera, HVAC…"
+              placeholder="María González"
               maxLength={120}
               aria-describedby="talent-query-help"
               className={field}
             />
           </label>
           <p id="talent-query-help" className="mt-1 text-xs leading-snug text-text-secondary">
-            Escribe el nombre de una persona, o el oficio, la habilidad o la certificación que
-            necesitas.
+            Solo busca nombres y apellidos. Para buscar por oficio, deja esta casilla vacía y
+            elige un <strong>Área</strong>.
           </p>
         </div>
 

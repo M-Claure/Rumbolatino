@@ -12,6 +12,7 @@ import { EmployerBar } from "@/components/employers/EmployerBar";
 import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailable";
 import { checkEmployerGate } from "@/lib/employers/session";
 import { EMPLOYER_COOKIE_NAME } from "@/lib/employers/constants";
+import { nameSearchTokens } from "@/lib/talent/text";
 import type { TalentSearchFilters } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -45,8 +46,8 @@ export function generateMetadata(): Metadata {
     title: `Contrata talento | ${brand.name}`,
     robots: { index: false, follow: false },
     description:
-      "Busca personas capacitadas y listas para trabajar: por nombre, por oficio, habilidad o " +
-      "certificación, y por cercanía.",
+      "Busca personas capacitadas y listas para trabajar: por su nombre, por área de trabajo " +
+      "y por cercanía.",
   };
 }
 
@@ -106,6 +107,15 @@ export default async function EmpleadoresPage({
   // still someone having narrowed the search.
   const searched = Boolean(raw.query || raw.category || raw.availability || zip);
 
+  // A query where nothing survives the two-character floor in
+  // `mcv_talent_name_query` matches nobody, deliberately — a one-letter prefix
+  // covers most of any name column, so answering it with the whole directory
+  // would be a page-out dressed up as a result (see `0014`). Without this branch
+  // the employer reads the generic "no encontramos a nadie", goes looking for
+  // someone who is in fact listed, and never learns that one letter is not a
+  // search.
+  const tooShort = Boolean(raw.query) && nameSearchTokens(raw.query ?? "").length === 0;
+
   return (
     <main className="mx-auto flex min-h-page max-w-5xl flex-col gap-6 px-6 py-10">
       <EmployerBar email={employer.email} />
@@ -120,15 +130,16 @@ export default async function EmpleadoresPage({
           promised an identification step that no longer exists, so the two
           sentences an employer read first described a different page. It named
           "disponibilidad" for the same reason and it went the same way when that
-          dropdown was removed — see the note in `TalentFilters`. This paragraph
-          and `generateMetadata`'s description must both list only the filters the
-          bar actually renders.
+          dropdown was removed, and it promised free-text search over trades and
+          certifications until `0014` narrowed the box to names — see the note in
+          `TalentFilters`. This paragraph and `generateMetadata`'s description
+          must both describe only what the bar actually does.
         */}
         <p className="max-w-2xl text-base leading-snug text-text-secondary">
           Aquí se buscan <strong>personas</strong>, no empleos: cada una terminó su currículum y
-          pidió aparecer en esta lista. Busca por su nombre si ya sabes a quién quieres, o por el
-          oficio, la habilidad o la certificación que necesitas, y acota por cercanía. Cada
-          currículum que descargues queda registrado a nombre de tu cuenta.
+          pidió aparecer en esta lista. Si ya sabes a quién quieres, escribe su nombre; si no,
+          elige un área de trabajo y acota por cercanía. Cada currículum que abras o descargues
+          queda registrado a nombre de tu cuenta.
         </p>
       </header>
 
@@ -165,16 +176,27 @@ export default async function EmpleadoresPage({
           icon="🔍"
           /* The query is echoed back because "no encontramos a nadie" on its own
              reads as "the directory is empty". Seeing the words they typed is
-             also how someone catches their own typo without re-opening the box. */
+             also how someone catches their own typo without re-opening the box.
+
+             Three cases, not two: too short to be a search, a name nobody has,
+             and filters that matched nobody. The first two used to share one
+             message, and it sent an employer hunting for a typo in a query that
+             was never run. Neither ever suggests typing a TRADE into this box —
+             it has only searched names since `0014`, and the way to search by
+             trade is the Área dropdown. */
           title={
-            raw.query
-              ? `No encontramos a nadie que coincida con “${raw.query}”`
-              : "No encontramos a nadie con esos filtros"
+            tooShort
+              ? "Escribe al menos dos letras"
+              : raw.query
+                ? `No encontramos a nadie que se llame “${raw.query}”`
+                : "No encontramos a nadie con esos filtros"
           }
           body={
-            raw.query
-              ? "Revisa cómo lo escribiste, prueba con una sola palabra —el oficio o el apellido—, o quita los demás filtros y mira quién hay."
-              : "Prueba con menos filtros o una distancia mayor, o elige solo un área y mira quién hay."
+            tooShort
+              ? "Esta casilla busca nombres y apellidos, y necesita al menos dos letras. También puedes dejarla vacía y elegir un área de trabajo."
+              : raw.query
+                ? "Revisa cómo se escribe el nombre, prueba solo con el apellido, o borra el nombre y busca por área de trabajo."
+                : "Prueba con menos filtros o una distancia mayor, o elige solo un área y mira quién hay."
           }
           action={{ href: "/empleadores", label: "Ver a todas las personas" }}
         />

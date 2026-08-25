@@ -37,7 +37,6 @@ import type {
   TalentSearchResult,
 } from "@/types";
 import { isTalentCategory } from "@/lib/talent/taxonomy";
-import { normalizeForMatch } from "@/lib/talent/classify";
 import { nameSearchTokens } from "@/lib/talent/text";
 import { distanceMiles } from "@/lib/geo/zip-lookup";
 
@@ -122,15 +121,18 @@ interface MemoryRow {
 /**
  * Process-local store for tests and memory-mode dev.
  *
- * The search is an APPROXIMATION of the Postgres one: it folds accents and does
- * token containment where the database does `plainto_tsquery('spanish', …)` over
- * a stemmed index. Close enough to exercise filters, paging and the ordering
- * contract; it will not agree with Postgres on stemming edge cases, and it is
- * not the thing to reach for when verifying relevance ranking.
+ * The search is an APPROXIMATION of the Postgres one for the filters — category,
+ * availability, radius, paging and the ordering contract — and it is not the
+ * thing to reach for when verifying relevance ranking.
  *
- * NAME matching is the exception: `nameSearchTokens` is shared with the SQL
- * side's rules, so the accent folding, the separator handling and the
- * two-character floor are the same here as in `mcv_talent_name_query`.
+ * The FREE-TEXT part is not an approximation, because since `0014` there is only
+ * one matcher and its rules are shared code: the box searches the display name
+ * and nothing else, through `nameSearchTokens`, so the accent folding, the
+ * separator handling, the prefix matching, the AND across tokens and the
+ * two-character floor are the same here as in `mcv_talent_name_query`. A query
+ * with nothing left after that floor matches NOBODY on both sides — an empty box
+ * lists everybody deliberately, but `a` is someone trying to search, and
+ * answering it with the whole directory would be a page-out dressed as a result.
  */
 export class MemoryTalentStore implements TalentDirectoryStore {
   private readonly rows = new Map<string, MemoryRow>();
@@ -175,12 +177,15 @@ export class MemoryTalentStore implements TalentDirectoryStore {
   }
 
   async search(filters: TalentSearchFilters): Promise<TalentSearchResult> {
-    const terms = filters.query ? normalizeForMatch(filters.query).split(" ").filter(Boolean) : [];
-    // Name tokens are a SEPARATE matcher, mirroring the OR in `talent_search`:
-    // the query is either words from somebody's résumé or somebody's name, and
-    // the two vocabularies must not be merged — see the surname/trade collision
-    // note in 0012 (`Herrera` vs herrería).
-    const nameTerms = filters.query ? nameSearchTokens(filters.query) : [];
+    // The whole free-text matcher: what the employer typed, as name tokens.
+    // `searching` and `nameTerms` are deliberately separate — a blank box is
+    // "show me everybody", while a box holding only one-character tokens is a
+    // search that matches nobody. Collapsing them would turn `a` into a way to
+    // page out the directory. Same distinction as the NULL from
+    // `mcv_talent_name_query`.
+    const typed = filters.query?.trim() ?? "";
+    const searching = typed !== "";
+    const nameTerms = nameSearchTokens(typed);
     const hasOrigin =
       typeof filters.latitude === "number" && typeof filters.longitude === "number";
     // Mirrors the clamp inside `talent_search`, so a caller cannot widen the
@@ -208,16 +213,11 @@ export class MemoryTalentStore implements TalentDirectoryStore {
         if (filters.category && p.category !== filters.category) return false;
         if (filters.availability && p.availability !== filters.availability) return false;
         if (origin && (distance === null || distance > radius)) return false;
-        if (terms.length === 0) return true;
-        const haystack = normalizeForMatch(
-          [p.headline, p.summary, p.skills.join(" "), p.certifications.join(" "), p.city, p.state]
-            .filter(Boolean)
-            .join(" "),
-        );
-        if (terms.every((t) => haystack.includes(t))) return true;
+        if (!searching) return true;
         // Prefix matching, ANDed, so `mar gonz` finds María González and does
         // not fall back to every María — the `:*` and the `&` in SQL. Order does
-        // not matter on either side.
+        // not matter on either side. Nothing else is searched: the résumé's own
+        // words are reachable through the category filter, not through this box.
         const nameTokens = nameSearchTokens(p.displayName);
         return (
           nameTerms.length > 0 &&
