@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { readPublicProfile } from "@/lib/services/talent-directory";
+import { checkEmployerGate, resolveEmployerSession } from "@/lib/employers/session";
+import { EmployerBar } from "@/components/employers/EmployerBar";
+import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailable";
 import {
   AVAILABILITY_LABELS,
   YEARS_BUCKET_LABELS,
@@ -17,13 +20,19 @@ export const dynamic = "force-dynamic";
 /**
  * One person's public profile.
  *
- * ── noindex, and why it is not a contradiction ─────────────────────────────
- * `/empleadores` is indexable so employers can find the directory. This page is
- * not, and the difference is the point: being discoverable as a SERVICE must not
- * make every individual listing a permanent, cached, searchable record of a real
- * person's employment situation. Someone who takes their listing down after a
- * week should not still be the top result for their own name a year later, and
- * `noindex` is the only part of that we control.
+ * ── Signed-in employers only ────────────────────────────────────────────────
+ * A verified employer session is required, so a shared profile URL is no longer
+ * a way around the directory's wall. Anyone without one is redirected to
+ * `/empleadores/acceso`, not 404'd: a 404 here would imply the listing does not
+ * exist, which is a different and false statement.
+ *
+ * ── noindex, still, and for its own reason ──────────────────────────────────
+ * The gate already keeps crawlers out, so `noindex` is now belt and braces — but
+ * it stays, because it is the part that survives a future decision to reopen
+ * browsing. Being discoverable as a SERVICE must not make every individual
+ * listing a permanent, cached, searchable record of a real person's employment
+ * situation. Someone who takes their listing down after a week should not still
+ * be the top result for their own name a year later.
  *
  * ── Missing, unpublished and expired all render the same 404 ───────────────
  * `readPublicProfile` cannot distinguish them for the caller, so this page
@@ -37,7 +46,13 @@ export async function generateMetadata({
 }: {
   params: { slug: string };
 }): Promise<Metadata> {
-  const profile = await readPublicProfile(params.slug).catch(() => null);
+  // Metadata renders for signed-out visitors too (they are about to be
+  // redirected), so it must not read a profile without a session — the title
+  // would otherwise leak the person's name and trade to anyone with the URL.
+  const employer = await resolveEmployerSession();
+  const profile = employer
+    ? await readPublicProfile(params.slug, employer).catch(() => null)
+    : null;
   return {
     title: profile ? `${profile.displayName} — ${profile.headline}` : "Perfil no disponible",
     robots: { index: false, follow: false },
@@ -45,21 +60,28 @@ export async function generateMetadata({
 }
 
 export default async function TalentProfilePage({ params }: { params: { slug: string } }) {
-  const profile = await readPublicProfile(params.slug).catch(() => null);
+  const gate = await checkEmployerGate();
+  if (gate.status === "misconfigured") return <DirectoryUnavailable />;
+  if (gate.status === "anonymous") redirect("/empleadores/acceso?estado=sesion_requerida");
+  const employer = gate.session;
+
+  const profile = await readPublicProfile(params.slug, employer).catch(() => null);
   if (!profile) notFound();
 
   const place = [profile.city, profile.state, profile.country].filter(Boolean).join(", ");
 
-  // Contact details are open — the same decision that opened the PDF download,
-  // and the PDF contains them anyway, so gating this panel beside a free
-  // download would protect nothing. Read through `revealContact` rather than a
-  // plain select so the view is still written to `contact_reveals`.
+  // Read through `revealContact` rather than a plain select, so viewing this
+  // panel is written to `contact_reveals` — and now with a real `employerId`,
+  // which is what makes the log able to answer "who has my phone number?" with a
+  // name instead of an IP address.
   const contact = await getTalentStore()
-    .revealContact({ employerId: null, slug: profile.slug, ip: clientIp(headers()) })
+    .revealContact({ employerId: employer.userId, slug: profile.slug, ip: clientIp(headers()) })
     .catch(() => null);
 
   return (
     <main className="mx-auto flex min-h-page max-w-3xl flex-col gap-6 px-6 py-10">
+      <EmployerBar email={employer.email} />
+
       <Link href="/empleadores" className="self-start text-sm font-medium text-accent-dark hover:underline">
         ← Volver a la búsqueda
       </Link>

@@ -50,6 +50,22 @@ const EnvSchema = z
      */
     AZURE_OPENAI_MODEL: z.string().default("gpt-5.3-codex"),
 
+    /**
+     * Public base URL of this deployment, e.g. `https://rumbolatino.com`.
+     *
+     * Only used to build the links in employer verification and password-reset
+     * emails, which have to be absolute and have to point at the host the
+     * employer is actually using. Optional because it is normally derivable from
+     * the request headers (`x-forwarded-host`); set it when a proxy rewrites
+     * those, or when a preview deployment must send links to the real domain.
+     *
+     * Whatever it resolves to must ALSO be on Supabase's redirect allow-list
+     * (Authentication → URL Configuration), or the link in the email lands on
+     * the project's Site URL instead and the flow silently ends in the wrong
+     * place.
+     */
+    NEXT_PUBLIC_SITE_URL: z.string().url().optional(),
+
     NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional(),
     NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),

@@ -2,11 +2,16 @@ import { handleRoute, ok } from "@/lib/http";
 import { headers } from "next/headers";
 import { originForZip, searchDirectory } from "@/lib/services/talent-directory";
 import { TalentSearchQuery } from "@/lib/validation/api-schemas";
+import { requireEmployerSession } from "@/lib/employers/session";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/talent/search — the public directory, as JSON.
+ * GET /api/talent/search — the directory, as JSON, for a signed-in employer.
+ *
+ * A 401 without a verified employer session. Not "public" any more: this used to
+ * answer anyone, which made it the cheapest way to enumerate every listed
+ * person. `requireEmployerSession` throws before any filter is read.
  *
  * A thin wrapper: the rate limit, the analytics and the store call all live in
  * `searchDirectory`, because `/empleadores` reads the same data server-side and
@@ -22,7 +27,8 @@ export async function GET(request: Request) {
     const { zip, radius, ...rest } = TalentSearchQuery.parse(
       Object.fromEntries(url.searchParams),
     );
+    const employer = await requireEmployerSession();
     const origin = originForZip(zip, radius);
-    return ok(await searchDirectory({ ...rest, ...(origin ?? {}) }, headers()));
+    return ok(await searchDirectory({ ...rest, ...(origin ?? {}) }, headers(), employer));
   });
 }

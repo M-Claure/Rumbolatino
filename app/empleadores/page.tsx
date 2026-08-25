@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { getBrandConfig } from "@/lib/brand/registry";
 import { getActiveBrandId } from "@/lib/brand/server";
@@ -7,6 +8,9 @@ import { originForZip, searchDirectorySafely } from "@/lib/services/talent-direc
 import { TalentSearchQuery } from "@/lib/validation/api-schemas";
 import { TalentTable } from "@/components/talent/TalentTable";
 import { TalentFilters } from "@/components/talent/TalentFilters";
+import { EmployerBar } from "@/components/employers/EmployerBar";
+import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailable";
+import { checkEmployerGate } from "@/lib/employers/session";
 import type { TalentSearchFilters } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -14,11 +18,18 @@ export const dynamic = "force-dynamic";
 /**
  * The employer side: a searchable directory of people who chose to be found.
  *
- * ── Indexing ────────────────────────────────────────────────────────────────
- * THIS page is indexable — it is how an employer discovers the directory at all,
- * and it lists nobody in particular above the fold that a crawler could harvest
- * as a person. Individual profiles at `/talento/[slug]` are `noindex`, so being
- * findable on Google never turns into being bulk-downloadable from it.
+ * ── Signed-in employers only ────────────────────────────────────────────────
+ * Every request here needs a verified employer session; without one it redirects
+ * to `/empleadores/acceso`. The redirect happens before `searchDirectorySafely`
+ * is reached, and that function requires the session object anyway, so there is
+ * no ordering mistake that can render a candidate to a stranger.
+ *
+ * ── Indexing: this page is now noindex, the WALL is indexable ────────────────
+ * It used to be the indexable discovery surface. It cannot be both gated and
+ * crawlable — a crawler has no account — and a page that renders a login wall to
+ * Google is worse than useless in an index. So `/empleadores/acceso` took over
+ * that job: it describes the service and lists nobody. Individual profiles at
+ * `/talento/[slug]` were already `noindex` and stay that way.
  *
  * ── Why the results are read server-side ───────────────────────────────────
  * Through `searchDirectorySafely`, which carries the same rate limit and the
@@ -31,6 +42,7 @@ export function generateMetadata(): Metadata {
   const brand = getBrandConfig(getActiveBrandId());
   return {
     title: `Contrata talento | ${brand.name}`,
+    robots: { index: false, follow: false },
     description:
       "Busca personas capacitadas y listas para trabajar: por nombre, por oficio, habilidad o " +
       "certificación, por cercanía y por disponibilidad.",
@@ -42,8 +54,17 @@ export default async function EmpleadoresPage({
 }: {
   searchParams: Record<string, string | string[] | undefined>;
 }) {
+  // The gate. `anonymous` gets a `redirect()` rather than a 404 or a wall
+  // rendered in place: the employer may simply have been signed out by an
+  // expired session, and the access page can say so and take them straight back.
+  // `misconfigured` must NOT redirect there — see `DirectoryUnavailable`.
+  const gate = await checkEmployerGate();
+  if (gate.status === "misconfigured") return <DirectoryUnavailable />;
+  if (gate.status === "anonymous") redirect("/empleadores/acceso?estado=sesion_requerida");
+  const employer = gate.session;
+
   // Anything not on the schema is dropped rather than passed through; a bad
-  // value falls back to an unfiltered search instead of erroring a public page.
+  // value falls back to an unfiltered search instead of erroring the page.
   const parsed = TalentSearchQuery.safeParse(searchParams);
   const raw = parsed.success ? parsed.data : {};
   const { zip, radius, ...rest } = raw;
@@ -55,10 +76,12 @@ export default async function EmpleadoresPage({
   const badZip = Boolean(zip) && origin === null;
 
   const filters: TalentSearchFilters = { ...rest, ...(origin ?? {}) };
-  const result = await searchDirectorySafely({ ...filters, limit: 24 }, headers());
+  const result = await searchDirectorySafely({ ...filters, limit: 24 }, headers(), employer);
 
   return (
     <main className="mx-auto flex min-h-page max-w-5xl flex-col gap-6 px-6 py-10">
+      <EmployerBar email={employer.email} />
+
       <header className="flex flex-col gap-2">
         <h1 className="text-2xl font-bold text-text-primary sm:text-3xl">
           Encuentra a quien necesitas
@@ -73,7 +96,7 @@ export default async function EmpleadoresPage({
           Aquí se buscan <strong>personas</strong>, no empleos: cada una terminó su currículum y
           pidió aparecer en esta lista. Busca por su nombre si ya sabes a quién quieres, o por el
           oficio, la habilidad o la certificación que necesitas, y acota por cercanía y
-          disponibilidad. Su currículum se descarga sin registrarte.
+          disponibilidad. Cada currículum que descargues queda registrado a nombre de tu cuenta.
         </p>
       </header>
 

@@ -378,3 +378,35 @@ export const CreateEmployerBody = z.object({
     .max(160)
     .refine(isEmail, { message: "Escribe un correo electrónico válido" }),
 });
+
+/**
+ * ── Employer accounts ───────────────────────────────────────────────────────
+ * Shape only. The RULES about which addresses and passwords are acceptable live
+ * in `lib/employers/policy.ts`, where each one is written next to its reasoning
+ * and unit-tested; duplicating them as Zod refinements would give two places to
+ * change and two different Spanish messages for the same rejection.
+ *
+ * The password is NOT trimmed. A leading or trailing space is a legitimate
+ * character in a passphrase, and silently removing it at sign-up while a
+ * password manager sends it verbatim at sign-in locks the account.
+ */
+export const EmployerSignUpBody = z.object({
+  company: z.string().trim().min(1, { message: "Escribe el nombre de tu empresa" }).max(120),
+  contactName: z.string().trim().min(1, { message: "Escribe tu nombre" }).max(120),
+  email: z.string().trim().min(1, { message: "Escribe tu correo" }).max(160),
+  password: z.string().min(1, { message: "Escribe una contraseña" }).max(200),
+});
+
+export const EmployerSignInBody = z.object({
+  email: z.string().trim().min(1, { message: "Escribe tu correo" }).max(160),
+  password: z.string().min(1, { message: "Escribe tu contraseña" }).max(200),
+});
+
+/** Resend verification, and request a password reset: both just take an address. */
+export const EmployerEmailBody = z.object({
+  email: z.string().trim().min(1, { message: "Escribe tu correo" }).max(160),
+});
+
+export const EmployerNewPasswordBody = z.object({
+  password: z.string().min(1, { message: "Escribe una contraseña" }).max(200),
+});

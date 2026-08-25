@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { handleRoute } from "@/lib/http";
 import { Errors } from "@/lib/errors";
-import { resolveExistingUserId } from "@/lib/auth";
 import { getTalentStore } from "@/lib/repositories";
+import { requireEmployerSession } from "@/lib/employers/session";
 import { getServiceResumeFileStore } from "@/lib/storage";
 import { clientIp } from "@/lib/rate-limit/policy";
 import { enforceRateLimit } from "@/lib/services/usage-guard";
@@ -13,19 +13,25 @@ export const runtime = "nodejs";
 /**
  * GET /api/talent/:slug/resume — the candidate's PDF.
  *
- * ── Open to anyone, by product decision ─────────────────────────────────────
- * This used to require an employer to say who they were first. That was removed
- * deliberately: the friction was judged not worth it. Be clear-eyed about what
- * it means — the résumé carries the person's full name, email and phone, so any
- * published profile's contact details are now downloadable by anyone who has the
- * URL, and the directory can be walked by a script. The people listed here are
- * told exactly this before they opt in (`PublishDialog`), which is what makes it
- * an honest trade rather than a surprise.
+ * ── Verified employers only ─────────────────────────────────────────────────
+ * This is the most sensitive route in the product: the PDF carries the person's
+ * full name, email and phone. It requires a verified employer session, and the
+ * download is recorded against that account.
  *
- * What still stands between the directory and a bulk harvest:
- *   - the rate limit below, now keyed by IP since there is no identity;
- *   - `contact_reveals`, which still records every download with a timestamp and
- *     an address, so "who has my résumé?" has at least a partial answer;
+ * That is a reversal. For a while this was open to anyone with the URL, on the
+ * judgement that identification was more friction than it was worth. What
+ * changed is the decision to gate the directory itself — once an employer must
+ * have an account to find anybody, there is no friction left to save by leaving
+ * the most revealing endpoint open, and an open PDF would simply be the hole
+ * every other gate is drilled around.
+ *
+ * What stands between the directory and a bulk harvest, in order of what
+ * actually stops it:
+ *   - the session requirement, which means a harvest needs a confirmed mailbox;
+ *   - the rate limit below, now keyed by the ACCOUNT, so changing networks does
+ *     not reset it;
+ *   - `contact_reveals`, which records every download against that account, so
+ *     "who has my résumé?" finally has a name in the answer;
  *   - slugs carrying a random suffix, so profiles cannot be enumerated by
  *     guessing names — the directory listing is the only way to find them.
  *
@@ -36,18 +42,17 @@ export const runtime = "nodejs";
  */
 export async function GET(request: Request, { params }: { params: { slug: string } }) {
   return handleRoute(async () => {
+    const employer = await requireEmployerSession();
     const ip = clientIp(request.headers);
-    // Keyed by IP now, and it is the only ceiling left on bulk collection —
-    // treat lowering it as cheap and raising it as a real decision.
-    await enforceRateLimit("contact_reveal", {
-      userId: await resolveExistingUserId(),
-      ip,
-    });
+    // Keyed by the account. Still the limit that matters most — treat lowering
+    // it as cheap and raising it as a real decision.
+    await enforceRateLimit("contact_reveal", { userId: employer.userId, ip });
 
-    // Still goes through the reveal function, so every download is recorded in
-    // `contact_reveals` — with a null employer, because there is no longer one.
+    // One statement in SQL: `talent_reveal_contact` inserts the audit row and
+    // returns the contact together, so contact data cannot come back without the
+    // access being recorded.
     const contact = await getTalentStore().revealContact({
-      employerId: null,
+      employerId: employer.userId,
       slug: params.slug,
       ip,
     });

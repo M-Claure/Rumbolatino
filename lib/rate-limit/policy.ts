@@ -44,7 +44,13 @@ export type LimitedOperation =
   /** One directory search. No tokens, but it is the enumeration surface. */
   | "directory_search"
   /** Unlocking one candidate's contact details. The scraping vector. */
-  | "contact_reveal";
+  | "contact_reveal"
+  /** Creating an employer account. Keyed by IP: it runs before an identity exists. */
+  | "employer_register"
+  /** One sign-in attempt. The password-guessing surface. */
+  | "employer_login"
+  /** Asking for a verification or password-reset email. Each one SENDS MAIL. */
+  | "employer_email";
 
 export interface LimitRule {
   /** Requests allowed per window. */
@@ -138,6 +144,37 @@ export const LIMITS: Record<LimitedOperation, LimitRule> = {
       "session and far short of a useful harvest. Since the employer form was removed this " +
       "is keyed by IP and is the ONLY ceiling left on bulk collection — lowering it is " +
       "cheap, raising it is a real decision.",
+  },
+  employer_register: {
+    limit: 10,
+    windowSeconds: HOUR,
+    reason:
+      "One person needs one account. Ten allows for typos in the email, a colleague on the " +
+      "same office address, and re-registering after abandoning an unverified attempt. " +
+      "Keyed by IP because this route runs before there is an account to key on — the same " +
+      "position `profile_create` is in.",
+  },
+  employer_login: {
+    limit: 20,
+    windowSeconds: HOUR,
+    reason:
+      "This is the password-guessing surface, and the only limit standing in front of it. " +
+      "Twenty is several honest attempts at a forgotten password and nowhere near enough " +
+      "for a dictionary. Keyed by IP for the same reason as registration: a failed login " +
+      "has no session, so an attacker would otherwise be counting against nobody. Note " +
+      "that a shared office address shares this bucket — that is the accepted cost of not " +
+      "letting the counter be reset by changing the email in the form.",
+  },
+  employer_email: {
+    limit: 6,
+    windowSeconds: HOUR,
+    reason:
+      "The tightest limit in the table, because every hit SENDS AN EMAIL from our domain to " +
+      "an address someone else typed. Loose limits here turn the resend and reset buttons " +
+      "into a way to mail-bomb a third party and to burn the sending reputation the " +
+      "verification link depends on. Six covers a link lost to a spam folder, twice, and " +
+      "a password reset in the same hour. Supabase enforces its own send limits under " +
+      "this, which is a backstop and not a substitute — see the note in `.env.example`.",
   },
 };
 

@@ -307,3 +307,42 @@ export const api = {
    */
   talentResumeUrl: (slug: string) => `/api/talent/${encodeURIComponent(slug)}/resume`,
 };
+
+// ── Employer accounts ───────────────────────────────────────────────────────
+// The only login in the product. See `lib/employers/session.ts` for why the
+// employer side has one when the job-seeker side deliberately does not.
+
+export interface EmployerSignUp {
+  company: string;
+  contactName: string;
+  email: string;
+  password: string;
+}
+
+/** Resolves with the address the link went to — never with whether it was new. */
+export function registerEmployer(body: EmployerSignUp): Promise<{ email: string }> {
+  return req("/api/employers/registro", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function signInEmployer(body: {
+  email: string;
+  password: string;
+}): Promise<{ status: "ok" } | { status: "unverified"; email: string }> {
+  return req("/api/employers/acceso", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function signOutEmployer(): Promise<{ signedOut: boolean }> {
+  return req("/api/employers/salir", { method: "POST" });
+}
+
+export function resendEmployerVerification(email: string): Promise<{ sent: boolean }> {
+  return req("/api/employers/reenviar", { method: "POST", body: JSON.stringify({ email }) });
+}
+
+export function requestEmployerPasswordReset(email: string): Promise<{ sent: boolean }> {
+  return req("/api/employers/recuperar", { method: "POST", body: JSON.stringify({ email }) });
+}
+
+export function setEmployerPassword(password: string): Promise<{ updated: boolean }> {
+  return req("/api/employers/contrasena", { method: "POST", body: JSON.stringify({ password }) });
+}

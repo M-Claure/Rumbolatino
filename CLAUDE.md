@@ -196,10 +196,19 @@ runbook; the rules that constrain code:
 - Never import `lib/env`, `lib/supabase`, `lib/ai` (index), or `lib/analytics`
   from pure domain code — they are `server-only`. Pure engines import only `types`.
 
-## No accounts (no login, no sign-up)
+## No accounts for JOB SEEKERS (no login, no sign-up)
 
-The product never asks anyone for a password. A visitor reads the hero, presses the
-CTA and is in the funnel; the identity the database needs is created *for* them.
+The product never asks a job seeker for a password. A visitor reads the hero,
+presses the CTA and is in the funnel; the identity the database needs is created
+*for* them.
+
+> **Employers are the exception, and the only one.** The directory at
+> `/empleadores` is behind a real login with email verification — see **Employer
+> accounts** below and `docs/employer-accounts.md`. The asymmetry is the point: a
+> job seeker is giving us their information to get a résumé, while an employer is
+> asking to read a list of real people's names, trades and phone numbers. Nothing
+> in this section applies to that side, and the two sessions live in separate
+> cookies so neither can evict the other.
 
 - **`resolveUserId()` (`lib/auth.ts`) is the whole mechanism.** It returns the
   session's user when there is one, and otherwise **starts a guest session**:
@@ -223,8 +232,11 @@ CTA and is in the funnel; the identity the database needs is created *for* them.
   Supabase project (Authentication → Sign In / Providers) *or*
   `SUPABASE_SERVICE_ROLE_KEY` set. With neither, every request fails with a logged
   configuration error.
-- There is no `/login` route, no sign-out, and no browser-side Supabase client. Do
-  not reintroduce one; a 401 from the API is now a bug, not a prompt to log in.
+- There is no login, no sign-out and no browser-side Supabase client **on the
+  job-seeker side**, and there must not be: a 401 from `/api/resume-profiles/*` is
+  a bug, not a prompt to log in. The employer surfaces (`/empleadores/acceso`,
+  `/api/employers/*`) are where a 401 IS meaningful, and they are a closed set —
+  do not add a third kind of session.
 
 ## Usage limits (rate limiting + AI spend caps)
 
@@ -366,19 +378,22 @@ the directory calls a model**: the category comes from a keyword classifier
   tile. The name links to the full profile; the CV column is a plain `<a>` — the
   route sets `Content-Disposition: attachment`, so the whole table needs no
   client JavaScript at all.
-- **Contact details and the CV are OPEN — no employer identification.** This was
-  a deliberate product decision after the identify-once form was judged not worth
-  the friction. Be clear-eyed about what it means: the résumé carries the
-  person's full name, email and phone, so any published profile's contact details
-  are downloadable by anyone with the URL, and the directory can be walked by a
-  script. What makes it honest rather than a surprise is that `PublishDialog`
-  names exactly this before anyone opts in. What still stands between the
-  directory and a bulk harvest: the `contact_reveal` rate limit (now IP-keyed,
-  and the ONLY remaining ceiling), the `contact_reveals` log which still records
-  every download with a timestamp and address, and random slug suffixes, which
-  still stop a *URL* from being guessed from a name even though `0012` lets a
-  name be searched (below).
-  The `employers` table survives in `0010` but nothing reads or writes it.
+- **NOTHING is visible without a verified employer account.** This reverses the
+  earlier decision to leave contact details and the CV open, which had been taken
+  on the judgement that identifying employers was more friction than it was
+  worth. Once the directory itself is gated there is no friction left to save by
+  leaving the most revealing endpoint open — an open PDF would just be the hole
+  every other gate is drilled around. See **Employer accounts** below and
+  `docs/employer-accounts.md`; `PublishDialog` still names exactly what an
+  employer will see before anyone opts in.
+  What now stands between the directory and a bulk harvest, in the order that
+  actually stops it: a confirmed mailbox is required at all; the
+  `directory_search` and `contact_reveal` limits are keyed by the **account**, so
+  changing networks no longer resets them; `contact_reveals` records every
+  download against a named employer rather than an IP; and slug suffixes stay
+  random, which still stops a *URL* from being guessed from a name even though
+  `0012` lets a name be searched (below).
+  The `employers` table from `0010` is finally the thing it was built for.
 - **Employers filter by radius, not by city name.** `?zip=77002&radius=25` — the
   ZIP is resolved to a point server-side, which keeps the URL shareable and
   readable. The city and state text filters were REMOVED with `0011`: typing
@@ -393,12 +408,13 @@ the directory calls a model**: the category comes from a keyword classifier
   reason the filter set is closed — free text, category, city, state,
   availability. No filter may proxy for a protected class; see
   `ALLOWED_FILTER_KEYS` and the discipline note in `lib/talent/taxonomy.ts`.
-- **Browsing NEVER mints a guest session.** Every other route calls
-  `resolveUserId()`, which creates an `auth.users` row when there is none. The
-  directory is the one surface strangers and crawlers are expected to hit, so it
-  uses `resolveExistingUserId()` (the read that does not mint) and falls back to
-  an IP-keyed rate limit. `POST /api/employers` is the single exception, and only
-  because someone just typed their name into it.
+- **Browsing NEVER mints a guest session, and now never happens anonymously
+  either.** Every job-seeker route calls `resolveUserId()`, which creates an
+  `auth.users` row when there is none. The directory must not: it used to be the
+  one surface strangers and crawlers were expected to hit. It now requires a
+  verified employer session instead, so the anonymous read (`resolveExistingUserId`)
+  is gone from `talent-directory.ts` and the rate limits are keyed by the employer
+  account rather than by IP.
 - **The search guard lives in the service, not the route.**
   `lib/services/talent-directory.ts` carries the rate limit and the analytics, and
   both `/api/talent/search` and the server-rendered `/empleadores` go through it —
@@ -425,11 +441,17 @@ the directory calls a model**: the category comes from a keyword classifier
   middleware rewrite, a second header); it was removed as more moving parts than
   the separation was worth. If a dedicated domain is ever wanted, point it at the
   same Vercel project — no code change is needed for `/empleadores` to answer on it.
-- **`/empleadores` is indexable; `/talento/[slug]` is `noindex`.** Being findable
-  on Google must not make every listing a permanent cached record of a real
-  person's employment situation. Unknown, unpublished and expired slugs all render
-  the same 404 — distinguishing them would confirm someone was once listed, which
-  is what unpublishing is meant to undo.
+- **`/empleadores/acceso` is indexable; everything behind it is `noindex`.** The
+  indexable surface MOVED when the directory was gated — it did not disappear. A
+  gated page cannot be crawled (a crawler has no account) and a login wall in a
+  search index is worse than useless, so the access page took over discovery: it
+  describes the service and lists nobody. Being findable as a service must not
+  make each listing a permanent cached record of a real person's employment
+  situation, which is why `/talento/[slug]` was already `noindex` and stays so
+  even now that the gate keeps crawlers out — it is the part that survives any
+  future decision to reopen browsing. Unknown, unpublished and expired slugs all
+  render the same 404; distinguishing them would confirm someone was once listed,
+  which is what unpublishing is meant to undo.
 - **Search is accent-insensitive, and Postgres does not do that for free.** The
   stock `spanish` config stems but does not fold accents, so `reposteria` would
   not find `Repostería` — a silent failure for an audience that mostly types
@@ -476,12 +498,86 @@ the directory calls a model**: the category comes from a keyword classifier
   would publish a name and a work history with no way to reach the person and no
   token to take it down with.
 
-**Still missing (Phase 4):** emailing the manage link — today the token is shown
-once, on the publish response, and a user who never copies it and then clears
-cookies cannot unpublish. That needs a mail dependency the repo does not have and
-should be treated as required, not polish. Also outstanding: the
+**Still missing for the directory:** emailing the manage link. The token is still
+shown once, on the publish response, so a user who never copies it and then clears
+cookies cannot unpublish. Note this is no longer blocked on infrastructure —
+employer verification means Supabase Auth is now sending mail for us — but that
+path only sends AUTH emails to the address on an account, and a manage link is
+neither, so it still needs a real mail dependency. Also outstanding: the
 `/perfil/gestionar?token=…` page, renewal, and moderation tooling for the
 `blocked` status.
+
+## Employer accounts (the directory's login)
+
+The one real login in the product. Full runbook in `docs/employer-accounts.md`,
+including the two Supabase dashboard settings it cannot work without ("Confirm
+email" ON, and custom SMTP — the built-in sender is a few messages an hour and
+explicitly not for production). The rules that constrain code:
+
+- **The employer cookie is NAMESPACED** (`mcv-empleador-auth`, in
+  `lib/employers/constants.ts` so the edge middleware can read it without
+  importing a `server-only` module). Both roles authenticate against the same
+  Supabase project, so one shared cookie would mean an employer signing in
+  *replaces* a job seeker's guest session — and that cookie is the only handle on
+  an in-progress résumé, with deliberately no recovery flow, so signing in would
+  destroy someone's work with no way back. It would also hand the builder the
+  employer's user id and start a résumé under their account.
+- **The `employers` row is written at the GATE, never at sign-up.** With email
+  confirmation on, `signUp` for an address that already has an account
+  deliberately does not say so — it returns a user-shaped object with no
+  identities, so the endpoint cannot enumerate accounts. A sign-up response
+  therefore cannot be trusted to describe a NEW user, and writing our row from it
+  would let someone register `ana@empresa.com` twice and overwrite the real Ana's
+  company name — an unauthenticated write to another account's row. So sign-up
+  puts the company and contact name in the auth user's metadata and writes
+  nothing; `ensureEmployerProfile` creates the row from an authenticated session.
+  That also makes the gate self-repairing for accounts whose write once failed.
+- **The gate must guarantee that row**, because `contact_reveals.employer_id` is
+  a foreign key to `employers`: a verified session with no row would fail the
+  audited reveal, turning a bookkeeping gap into a broken download.
+- **`EmployerSession` is a PARAMETER, not a lookup.** `searchDirectory`,
+  `searchDirectorySafely` and `readPublicProfile` all take one, and only
+  `resolveEmployerSession` can produce one. The gate is enforced by the type
+  checker, so a new caller that skips it is a compile error rather than something
+  review has to catch. Do not add an overload that makes it optional.
+- **Verification is read from `auth.users.email_confirmed_at`**, never mirrored
+  into `employers`. One source of truth, and no copy that can drift into claiming
+  "verified" when Supabase disagrees.
+- **The password rule MIRRORS a Supabase dashboard setting, deliberately.** At
+  least 10 characters plus an uppercase, a lowercase, a digit and a symbol —
+  Authentication → Providers → Email → Password Requirements → "Lowercase,
+  uppercase letters, digits and symbols" is the authority, enforced by the auth
+  API whatever `lib/employers/policy.ts` says. It is mirrored in code anyway
+  because the API rejects in ENGLISH: `inspectPassword` names which classes are
+  missing, in Spanish, and names them all at once so one fix is not four attempts.
+  `PASSWORD_RULE_TEXT` is the single sentence both forms and the server fallback
+  share. The symbol list is GoTrue's own, character for character — more
+  permissive accepts a symbol Supabase will not count, less permissive refuses a
+  valid password. Note this cuts against NIST's advice on composition rules; it
+  was chosen, not overlooked, so change the dashboard and the code together.
+- **Free webmail is ACCEPTED; disposable inboxes are not**
+  (`lib/employers/policy.ts`). The employers this directory exists for are small
+  local businesses, many with no domain at all — requiring a company domain would
+  gate out the demand side of the marketplace to buy a signal the verification
+  link already gives. Throwaway domains are refused because a ten-minute mailbox
+  is not an accountable party and makes `contact_reveals` worthless. `guest.invalid`
+  is on that list so a job seeker's provisioned guest identity can never become an
+  employer. The list is a speed bump, not a wall.
+- **Exactly ONE sign-in failure is distinguished.** A correct password on an
+  unconfirmed mailbox returns `status: "unverified"` with a resend button;
+  everything else is one generic message, because "no account with that address"
+  turns the login form into an account-existence oracle. The resend and reset
+  routes always answer 200 for the same reason — do not add a "not found" branch
+  to be helpful.
+- **`employer_email` (6/hour) is the tightest limit in the product.** Every hit
+  sends mail from our domain to an address the caller typed, so a loose limit is
+  a way to mail-bomb a third party and to burn the sending reputation the whole
+  flow depends on.
+- **Both emailed-link shapes are handled** (`exchangeEmployerAuthCode`): `?code=`
+  needs the PKCE verifier cookie and so only works in the browser that signed up,
+  while `?token_hash=&type=` works anywhere but requires the operator to edit the
+  email template. Supporting only the first would strand every cross-device click,
+  which is the common case — people sign up on a laptop and read mail on a phone.
 
 ## Safety rules (enforced in CODE, not just prompts)
 
@@ -604,7 +700,9 @@ reachable only through functions granted to `service_role`. See **Usage limits**
 And four from `0010_talent_directory.sql` — `talent_profiles` (owner-only RLS; the
 public view of it is two security-definer functions, never a policy),
 `talent_contacts`, `employers` and `contact_reveals` (RLS on, no policies,
-service-role only). See **Bolsa de Talento**.
+service-role only). See **Bolsa de Talento**. `employers` is keyed to
+`auth.users(id)` and now holds a row per registered employer, written at the gate
+— see **Employer accounts**.
 
 `0007_simplified_schema.sql` collapsed 13 tables into five;
 `0008_resume_pdf_per_stage.sql` dropped `resume_pdfs` for the fifth. The rules that
@@ -682,7 +780,10 @@ is missing; improve wording without changing meaning; return valid JSON only.
   For the directory: the projection's exact public key set (so a new field on
   `TalentProfilePublic` fails until someone decides it is publishable), the
   publish gates and consent stamping, taxonomy/classifier determinism, listing
-  expiry, reveal auditing, and the rate-limit policy.
+  expiry, reveal auditing, and the rate-limit policy. For employer accounts: the
+  email and password rules in `lib/employers/policy.ts` and the three new limits.
+  The session/gate itself is NOT unit-tested — it is a thin wrapper over Supabase
+  Auth and needs a real project; verify it by hand against a branch database.
 - **E2E** (`tests/e2e/`, Playwright): the seven flows in spec §19, driven through
   the API against a production build in mock/memory mode.
 - Always mock the AI provider in tests (`MockAIProvider`) — it obeys the same
@@ -722,7 +823,12 @@ All via environment variables; never commit secrets. See `.env.example`.
 `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
 `SUPABASE_SERVICE_ROLE_KEY`, `AMPLITUDE_API_KEY`, `PERSISTENCE`, `PDF_RENDERER`,
 `DEFAULT_BRAND`, `BRAND_HOST_OVERRIDES`, `AI_SPEND_CAP_PROFILE_USD`,
-`AI_SPEND_CAP_USER_USD`, `AI_SPEND_CAP_DAILY_USD`, `USAGE_LIMITS`.
+`AI_SPEND_CAP_USER_USD`, `AI_SPEND_CAP_DAILY_USD`, `USAGE_LIMITS`,
+`NEXT_PUBLIC_SITE_URL`.
+
+Two settings for the employer login live in the **Supabase dashboard**, not here,
+and the feature is broken without them: "Confirm email" ON, and custom SMTP. See
+`docs/employer-accounts.md`.
 
 ## Out of scope (do not add in milestone 1)
 

@@ -1,8 +1,8 @@
 import "server-only";
 import type { TalentProfilePublic, TalentSearchFilters, TalentSearchResult } from "@/types";
 import { getAnalytics } from "@/lib/analytics";
-import { resolveExistingUserId } from "@/lib/auth";
 import { getTalentStore } from "@/lib/repositories";
+import type { EmployerSession } from "@/lib/employers/session";
 import { clientIp } from "@/lib/rate-limit/policy";
 import { enforceRateLimit } from "@/lib/services/usage-guard";
 import { lookupZip } from "@/lib/geo/zip-lookup";
@@ -18,11 +18,16 @@ import { lookupZip } from "@/lib/geo/zip-lookup";
  * the same analytics — and "remember to add the limit in both" is not a control.
  * Putting the guard here means the only way to read the directory is through it.
  *
- * ── Why no guest session is minted ──────────────────────────────────────────
- * `resolveExistingUserId()` reads a session without creating one. Browsing is
- * the one surface strangers and crawlers are expected to hit, and minting an
- * `auth.users` row per anonymous visitor would fill the table with junk and hand
- * anyone a way to inflate the guest population from outside. See `lib/auth.ts`.
+ * ── The employer session is a PARAMETER, not a lookup ───────────────────────
+ * Every function that reads candidate data takes an `EmployerSession`, so the
+ * gate is enforced by the type system rather than by remembering to check. There
+ * is no code path from an anonymous request to a candidate's name: a caller
+ * cannot invent one of these — only `requireEmployerSession` and
+ * `resolveEmployerSession` produce them, and both demand a confirmed mailbox.
+ *
+ * This replaced `resolveExistingUserId()`, which was here to read a session
+ * WITHOUT minting a guest, back when strangers and crawlers were expected to hit
+ * this surface. They are not any more; the wall at `/empleadores/acceso` is.
  */
 /**
  * Turn `?zip=77002&radius=25` into the coordinates the store filters on.
@@ -48,9 +53,15 @@ export function originForZip(
 export async function searchDirectory(
   filters: TalentSearchFilters,
   headers: Headers,
+  employer: EmployerSession,
 ): Promise<TalentSearchResult> {
-  const userId = await resolveExistingUserId();
-  await enforceRateLimit("directory_search", { userId, ip: clientIp(headers) });
+  // Keyed by the account now, not the IP. That is the point of requiring one:
+  // a shared office address no longer shares a quota, and an abusive account
+  // cannot shed its counter by changing networks.
+  await enforceRateLimit("directory_search", {
+    userId: employer.userId,
+    ip: clientIp(headers),
+  });
 
   const result = await getTalentStore().search(filters);
 
@@ -64,7 +75,7 @@ export async function searchDirectory(
       // names into search boxes. See the analytics allow-list.
       hasQuery: Boolean(filters.query?.trim()),
     },
-    userId ?? undefined,
+    employer.userId,
   );
 
   return result;
@@ -75,7 +86,13 @@ export async function searchDirectory(
  * the three are deliberately indistinguishable to the caller, so the 404 page
  * cannot be used to confirm that a given person was ever listed.
  */
-export async function readPublicProfile(slug: string): Promise<TalentProfilePublic | null> {
+export async function readPublicProfile(
+  slug: string,
+  _employer: EmployerSession,
+): Promise<TalentProfilePublic | null> {
+  // The session is unused here beyond being required to have one — that IS the
+  // check. Named with an underscore rather than dropped from the signature: the
+  // parameter is what stops a future caller from reading a profile without one.
   return getTalentStore().getPublicBySlug(slug);
 }
 
@@ -91,9 +108,10 @@ export async function readPublicProfile(slug: string): Promise<TalentProfilePubl
 export async function searchDirectorySafely(
   filters: TalentSearchFilters,
   headers: Headers,
+  employer: EmployerSession,
 ): Promise<TalentSearchResult | null> {
   try {
-    return await searchDirectory(filters, headers);
+    return await searchDirectory(filters, headers, employer);
   } catch (error) {
     console.error("[talent] directory search failed:", error);
     return null;

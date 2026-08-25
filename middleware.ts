@@ -3,6 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { isOnline } from "@/lib/connectivity";
 import { BRAND_COOKIE, BRAND_HEADER, BRAND_QUERY } from "@/lib/brand/constants";
 import { brandEnv, resolveBrand, type BrandResolution } from "@/lib/brand/resolve";
+import { EMPLOYER_COOKIE_NAME } from "@/lib/employers/constants";
 
 /**
  * Builds the 503 response returned to every request while the host is offline.
@@ -91,9 +92,13 @@ function persistBrandCookie(
  *   2. Brand resolution: stamp the resolved brand on the request so the render
  *      tree can read it (see `lib/brand/server.ts`).
  *   3. Refresh the Supabase session so Server Components and route handlers see
- *      a valid one. There is no login in this product — the session belongs to a
- *      guest created on the first request that needs it (see `lib/auth.ts`) — but
- *      it still expires, so it still has to be refreshed here.
+ *      a valid one. On the job-seeker side there is no login — the session belongs
+ *      to a guest created on the first request that needs it (see `lib/auth.ts`) —
+ *      but it still expires, so it still has to be refreshed here.
+ *   4. Refresh the EMPLOYER session, which lives in its own cookie and is the one
+ *      real login in the product (see `lib/employers/session.ts`). Only on the
+ *      paths that can use it, because it is a second round trip to the auth
+ *      server and most requests are not employer requests.
  */
 export async function middleware(request: NextRequest) {
   // Online-only guard: the app must not function without a connection.
@@ -129,7 +134,54 @@ export async function middleware(request: NextRequest) {
   // *creates* a session: a guest is minted lazily in a route handler, which is the
   // only place a cookie write survives (see `lib/auth.ts`).
   await supabase.auth.getUser();
+
+  await refreshEmployerSession(request, response, url, anon);
   return response;
+}
+
+/**
+ * Keep the employer login alive across the pages that use it.
+ *
+ * Scoped to the employer surfaces on purpose. This is a network call to the auth
+ * server, and doing it on every request in the app would pay for a second one on
+ * the whole job-seeker funnel, which cannot use this session at all.
+ *
+ * Skipped entirely when the employer cookie is absent — the overwhelmingly common
+ * case, since nearly everyone here is a job seeker — so a signed-out visitor to
+ * `/empleadores/acceso` costs nothing extra. Like the guest refresh above, this
+ * never CREATES a session.
+ */
+async function refreshEmployerSession(
+  request: NextRequest,
+  response: NextResponse,
+  supabaseUrl: string,
+  anonKey: string,
+): Promise<void> {
+  const path = request.nextUrl.pathname;
+  const isEmployerSurface =
+    path.startsWith("/empleadores") ||
+    path.startsWith("/talento") ||
+    path.startsWith("/api/talent") ||
+    path.startsWith("/api/employers");
+  if (!isEmployerSurface) return;
+
+  // `getAll()` names are prefixed by @supabase/ssr, so match on the stem rather
+  // than an exact name — a chunked session arrives as `<name>.0`, `<name>.1`.
+  const hasEmployerCookie = request.cookies
+    .getAll()
+    .some((cookie) => cookie.name.startsWith(EMPLOYER_COOKIE_NAME));
+  if (!hasEmployerCookie) return;
+
+  const employerClient = createServerClient(supabaseUrl, anonKey, {
+    cookieOptions: { name: EMPLOYER_COOKIE_NAME },
+    cookies: {
+      getAll: () => request.cookies.getAll(),
+      setAll: (toSet: { name: string; value: string; options?: Record<string, unknown> }[]) => {
+        toSet.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
+      },
+    },
+  });
+  await employerClient.auth.getUser();
 }
 
 export const config = {

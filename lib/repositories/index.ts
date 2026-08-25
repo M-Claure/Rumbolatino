@@ -4,11 +4,14 @@ import { getSupabaseServerClient, getSupabaseServiceClient } from "@/lib/supabas
 import { MemoryStore } from "./memory-store";
 import { SupabaseStore } from "./supabase-store";
 import { MemoryTalentStore, SupabaseTalentStore } from "./talent-store";
+import { MemoryEmployerStore, SupabaseEmployerStore } from "./employer-store";
 import type { Store } from "./store";
 import type { TalentDirectoryStore } from "./talent-store";
+import type { EmployerStore } from "./employer-store";
 
 export type { Store } from "./store";
 export type { TalentDirectoryStore } from "./talent-store";
+export type { EmployerStore, EmployerProfile } from "./employer-store";
 
 /**
  * A single MemoryStore must persist across requests for the whole process.
@@ -82,4 +85,43 @@ export function getTalentStore(): TalentDirectoryStore {
   }
 
   return new SupabaseTalentStore(getSupabaseServerClient(), getSupabaseServiceClient());
+}
+
+/**
+ * Same globalThis reasoning as `getMemoryStore` — an employer registered by one
+ * route must be readable by the next in dev.
+ */
+const globalForEmployers = globalThis as unknown as { __mcvMemoryEmployers?: MemoryEmployerStore };
+
+export function getMemoryEmployerStore(): MemoryEmployerStore {
+  if (!globalForEmployers.__mcvMemoryEmployers) {
+    globalForEmployers.__mcvMemoryEmployers = new MemoryEmployerStore();
+  }
+  return globalForEmployers.__mcvMemoryEmployers;
+}
+
+/**
+ * Fails CLOSED, like `getTalentStore` and unlike the rate limiter.
+ *
+ * Both directions of this store gate access to other people's contact details:
+ * without it a sign-up cannot be recorded, and a gated page cannot confirm that
+ * the session in front of it belongs to a registered employer. "Carry on anyway"
+ * would mean either losing the account or opening the directory — so a missing
+ * service role is a configuration fault the operator fixes before the employer
+ * side is offered at all.
+ */
+export function getEmployerStore(): EmployerStore {
+  const env = getEnv();
+  if (env.PERSISTENCE !== "supabase") return getMemoryEmployerStore();
+
+  if (!env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error(
+      "[employers] SUPABASE_SERVICE_ROLE_KEY is not set. The `employers` table has RLS on " +
+        "with no policies (supabase/migrations/0010_talent_directory.sql), so it is " +
+        "reachable only by the service role.",
+    );
+    throw new Error("El acceso para empresas no está configurado en este entorno.");
+  }
+
+  return new SupabaseEmployerStore(getSupabaseServiceClient());
 }
