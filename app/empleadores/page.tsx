@@ -5,7 +5,7 @@ import { cookies, headers } from "next/headers";
 import { getBrandConfig } from "@/lib/brand/registry";
 import { getActiveBrandId } from "@/lib/brand/server";
 import { originForZip, searchDirectorySafely } from "@/lib/services/talent-directory";
-import { TalentSearchQuery } from "@/lib/validation/api-schemas";
+import { TalentSearchQuery, type TalentSearchParams } from "@/lib/validation/api-schemas";
 import { TalentTable } from "@/components/talent/TalentTable";
 import { TalentFilters } from "@/components/talent/TalentFilters";
 import { EmployerBar } from "@/components/employers/EmployerBar";
@@ -84,10 +84,10 @@ export default async function EmpleadoresPage({
   }
   const employer = gate.session;
 
-  // Anything not on the schema is dropped rather than passed through; a bad
-  // value falls back to an unfiltered search instead of erroring the page.
-  const parsed = TalentSearchQuery.safeParse(searchParams);
-  const raw = parsed.success ? parsed.data : {};
+  // Anything not on the schema is dropped rather than passed through. A bad
+  // value costs the employer THAT filter and nothing else — see the note on
+  // `parseFilters`, which is where this page's search box was quietly broken.
+  const { filters: raw, ignored } = parseFilters(searchParams);
   const { zip, radius, ...rest } = raw;
 
   const origin = originForZip(zip, radius);
@@ -98,6 +98,13 @@ export default async function EmpleadoresPage({
 
   const filters: TalentSearchFilters = { ...rest, ...(origin ?? {}) };
   const result = await searchDirectorySafely({ ...filters, limit: 24 }, headers(), employer);
+
+  // "Nobody matched what you asked for" and "nobody has published yet" are the
+  // same empty table and completely different news. Telling an employer to try
+  // fewer filters when they used none sends them looking for a mistake they did
+  // not make; a typed ZIP counts even when it did not resolve, since that is
+  // still someone having narrowed the search.
+  const searched = Boolean(raw.query || raw.category || raw.availability || zip);
 
   return (
     <main className="mx-auto flex min-h-page max-w-5xl flex-col gap-6 px-6 py-10">
@@ -127,6 +134,14 @@ export default async function EmpleadoresPage({
 
       <TalentFilters filters={filters} zip={zip ?? ""} radius={radius} />
 
+      {ignored.length > 0 && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          No entendimos {ignored.length === 1 ? "el filtro" : "los filtros"}{" "}
+          <strong>{ignored.join(", ")}</strong>, así que {ignored.length === 1 ? "lo" : "los"}{" "}
+          ignoramos. El resto de tu búsqueda sí se aplicó.
+        </p>
+      )}
+
       {badZip && (
         <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           No reconocimos el código postal <strong>{zip}</strong>. Revísalo, o busca sin él.
@@ -139,11 +154,29 @@ export default async function EmpleadoresPage({
           title="No pudimos cargar el directorio"
           body="Hubo un problema de nuestro lado. Vuelve a intentarlo en un momento."
         />
+      ) : result.total === 0 && !searched ? (
+        <EmptyState
+          icon="🌱"
+          title="Todavía no hay perfiles publicados"
+          body="Cuando alguien termine su currículum y pida aparecer en la bolsa de talento, lo verás aquí."
+        />
       ) : result.total === 0 ? (
         <EmptyState
           icon="🔍"
-          title="No encontramos a nadie con esos filtros"
-          body="Revisa cómo escribiste el nombre, prueba con menos filtros o una distancia mayor, o elige solo un área y mira quién hay."
+          /* The query is echoed back because "no encontramos a nadie" on its own
+             reads as "the directory is empty". Seeing the words they typed is
+             also how someone catches their own typo without re-opening the box. */
+          title={
+            raw.query
+              ? `No encontramos a nadie que coincida con “${raw.query}”`
+              : "No encontramos a nadie con esos filtros"
+          }
+          body={
+            raw.query
+              ? "Revisa cómo lo escribiste, prueba con una sola palabra —el oficio o el apellido—, o quita los demás filtros y mira quién hay."
+              : "Prueba con menos filtros o una distancia mayor, o elige solo un área y mira quién hay."
+          }
+          action={{ href: "/empleadores", label: "Ver a todas las personas" }}
         />
       ) : (
         <>
@@ -182,7 +215,18 @@ export default async function EmpleadoresPage({
   );
 }
 
-function EmptyState({ icon, title, body }: { icon: string; title: string; body: string }) {
+function EmptyState({
+  icon,
+  title,
+  body,
+  action,
+}: {
+  icon: string;
+  title: string;
+  body: string;
+  /** A way out of the empty state — never make clearing a search a back-button job. */
+  action?: { href: string; label: string };
+}) {
   return (
     <div className="flex flex-col items-center gap-2 rounded-2xl border border-border bg-white px-6 py-12 text-center">
       <span className="text-3xl" aria-hidden>
@@ -190,8 +234,56 @@ function EmptyState({ icon, title, body }: { icon: string; title: string; body: 
       </span>
       <p className="text-base font-bold text-text-primary">{title}</p>
       <p className="max-w-md text-sm leading-snug text-text-secondary">{body}</p>
+      {action && (
+        <Link
+          href={action.href}
+          className="mt-2 font-medium text-accent-dark hover:underline"
+        >
+          {action.label}
+        </Link>
+      )}
     </div>
   );
+}
+
+/**
+ * Parse the query string, dropping ONLY the parameters that are genuinely bad.
+ *
+ * This used to be `parsed.success ? parsed.data : {}`, and that one line made the
+ * search box unusable. `TalentFilters` is a plain GET form, so it submits every
+ * control it renders — including `category=` when "Todas" is selected, which is
+ * the default. That failed the schema, the fallback threw away the whole filter
+ * set, and the page ran an UNFILTERED search: type a name nobody has, get the
+ * entire directory back. Nothing errored and nothing was ever empty, which is
+ * why it survived. `blankAsAbsent` in the schema is the actual fix; this is the
+ * blast radius, and it is worth fixing separately.
+ *
+ * Widening a search on bad input is the wrong failure for this page. An employer
+ * reads whatever comes back as the answer to what they asked, so showing them
+ * everybody is worse than showing them nothing. Keep what parsed, drop what did
+ * not, and say which — a bad `radius` should cost a radius, not a query.
+ */
+function parseFilters(searchParams: Record<string, string | string[] | undefined>): {
+  filters: TalentSearchParams;
+  /** Parameter names that were thrown away, so the page can admit to it. */
+  ignored: string[];
+} {
+  const parsed = TalentSearchQuery.safeParse(searchParams);
+  if (parsed.success) return { filters: parsed.data, ignored: [] };
+
+  const ignored = [
+    ...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? ""))),
+  ].filter(Boolean);
+
+  const retry = TalentSearchQuery.safeParse(
+    Object.fromEntries(
+      Object.entries(searchParams).filter(([key]) => !ignored.includes(key)),
+    ),
+  );
+  // A second failure would mean an issue with no path to attribute it to, which
+  // this schema cannot produce. Falling back to no filters is right for that
+  // case: it is the only remaining honest answer.
+  return { filters: retry.success ? retry.data : {}, ignored };
 }
 
 /**

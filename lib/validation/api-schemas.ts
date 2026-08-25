@@ -334,6 +334,35 @@ export const PublishTalentBody = z.object({
 
 
 /**
+ * An empty query-string value means "not provided", never "match the empty
+ * string".
+ *
+ * ── This is not a nicety; it is the fix for a silent, total search failure ───
+ * An HTML GET form has no way to omit a control. `<option value="">Todas</option>`
+ * and a blank `<input>` both submit `key=`, so EVERY default search from
+ * `TalentFilters` arrived carrying `category=`. Zod's `.optional()` accepts only
+ * `undefined`, so the whole object failed to parse — and `/empleadores` then fell
+ * back to an empty filter set, discarding the search text along with it and
+ * rendering the entire directory.
+ *
+ * The result was the worst shape a search bug can take: it never errored and it
+ * never came back empty. Typing a name nobody has returned everybody, so the
+ * "no encontramos a nadie" state below was unreachable in practice. `z.coerce`
+ * hid a second copy of the same bug — `Number("")` is `0`, which then failed
+ * `radius`'s `.min(1)`.
+ *
+ * Applied per field rather than to the object so a value that is genuinely
+ * invalid (`limit=999`, `category=medicina`) still fails loudly and still gives
+ * `/api/talent/search` its 422.
+ */
+function blankAsAbsent<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    schema,
+  );
+}
+
+/**
  * Directory search parameters, parsed from the query string.
  *
  * The allow-list here is the whole filter surface, and it is short by design —
@@ -346,19 +375,22 @@ export const PublishTalentBody = z.object({
  * turns an over-large request into a clear 422 instead of a silent truncation.
  */
 export const TalentSearchQuery = z.object({
-  query: z.string().trim().max(120).optional(),
-  category: z.enum(TALENT_CATEGORY_IDS).optional(),
-  availability: z.enum(TALENT_AVAILABILITIES).optional(),
+  query: blankAsAbsent(z.string().trim().max(120).optional()),
+  category: blankAsAbsent(z.enum(TALENT_CATEGORY_IDS).optional()),
+  availability: blankAsAbsent(z.enum(TALENT_AVAILABILITIES).optional()),
   /**
    * The employer types a ZIP, not coordinates. It is resolved to a point
    * server-side (`lib/geo/zip-lookup.ts`), which keeps the URL shareable and
    * readable — `?zip=77002&radius=25` says what it does, a lat/lng pair does not.
    */
-  zip: z.string().trim().max(10).optional(),
-  radius: z.coerce.number().min(1).max(500).optional(),
-  limit: z.coerce.number().int().min(1).max(60).optional(),
-  offset: z.coerce.number().int().min(0).max(5000).optional(),
+  zip: blankAsAbsent(z.string().trim().max(10).optional()),
+  radius: blankAsAbsent(z.coerce.number().min(1).max(500).optional()),
+  limit: blankAsAbsent(z.coerce.number().int().min(1).max(60).optional()),
+  offset: blankAsAbsent(z.coerce.number().int().min(0).max(5000).optional()),
 });
+
+/** The parsed filter set, as `/empleadores` and `/api/talent/search` both see it. */
+export type TalentSearchParams = z.infer<typeof TalentSearchQuery>;
 
 /**
  * Who is asking to see a contact.

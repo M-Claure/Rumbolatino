@@ -2,7 +2,7 @@
   "name": "mi-cv-con-ia",
   "version": "0.1.0",
   "private": true,
-  "description": "Backend & AI orchestration for Mi CV con IA \u2014 Spanish-language AI resume builder",
+  "description": "Backend & AI orchestration for Mi CV con IA — Spanish-language AI resume builder",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -12,7 +12,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "db:reset": "supabase db reset"
+    "db:reset": "supabase db reset",
+    "demo:seed": "vite-node --config vitest.config.ts scripts/seed-talent-demo.ts --",
+    "demo:seed:clean": "vite-node --config vitest.config.ts scripts/seed-talent-demo.ts -- --clean"
   },
   "dependencies": {
     "@sparticuz/chromium": "^148.0.0",
