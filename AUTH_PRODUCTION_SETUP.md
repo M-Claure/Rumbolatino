@@ -11,7 +11,7 @@ real credentials**, and must not be given any.
 | [A. What was implemented in code](#a-what-was-implemented-in-code) | |
 | [B. Environment variables](#b-environment-variables) | placeholders only |
 | [C. Supabase dashboard settings](#c-supabase-dashboard-settings) | **needs your access** |
-| [D. Redirect URLs](#d-redirect-urls) | **needs your access** |
+| [D. URL configuration](#d-url-configuration) | **needs your access** |
 | [E. Enabling email confirmation](#e-enabling-email-confirmation) | **needs your access** |
 | [F. Resend Custom SMTP](#f-resend-custom-smtp-in-supabase) | **needs your access** |
 | [G. DNS — for Aprende / Rumbo Latino IT](#g-dns--what-it-must-do) | **needs IT** |
@@ -173,7 +173,7 @@ give a customer two identities to trust instead of one.
 | 4 | Authentication → Providers → Email → Password Requirements | Required characters | **Lowercase, uppercase letters, digits and symbols** |
 | 5 | Authentication → Providers → Email | Enable Email provider | ON |
 | 6 | Authentication → URL Configuration | Site URL | `https://rumbolatino.com` |
-| 7 | Authentication → URL Configuration | Redirect URLs | see [section D](#d-redirect-urls) |
+| 7 | Authentication → URL Configuration | Redirect URLs | see [section D](#d-url-configuration) |
 | 8 | Authentication → Emails → Templates | All templates | see `docs/auth-email-templates.md` |
 | 9 | Project Settings → Authentication → SMTP Settings | Custom SMTP | Resend — see [section F](#f-resend-custom-smtp-in-supabase) |
 | 10 | Authentication → Sessions | Email OTP Expiration | 3600 s (1 h) is fine; ≤ 24 h |
@@ -193,42 +193,227 @@ provides a fallback path — see `lib/auth.ts`.)
 
 ---
 
-## D. Redirect URLs
+## D. URL configuration
 
-Authentication → URL Configuration → **Redirect URLs**. Supabase silently
-replaces any destination not on this list with the project's Site URL, so a
-missing entry looks like "the link goes to the home page for no reason".
+**Authentication → URL Configuration.** Two settings, and they do different jobs.
+Getting either wrong fails *silently* — no error, no log line, just a link that
+lands somewhere useless — so this section is longer than its two text boxes
+suggest.
+
+### D0. Which one actually matters, and when
+
+| | Used by | Consequence if wrong |
+| --- | --- | --- |
+| **Site URL** | `{{ .SiteURL }}` in the email templates; the fallback when a redirect is rejected | The confirmation link in every email points at the wrong host. **Nothing works.** |
+| **Redirect URLs** | the allow-list Supabase checks `emailRedirectTo` / `redirectTo` against | Links silently land on the Site URL instead of where they should |
+
+Once you paste the `token_hash` templates (§C step 8), the confirmation link goes
+**directly** from the email to `{{ .SiteURL }}/auth/confirm?token_hash=…`. It never
+passes through Supabase's `/auth/v1/verify` endpoint, so the Redirect URLs
+allow-list is **not consulted on the normal path at all**.
+
+That has two consequences worth holding onto:
+
+1. **Site URL is the load-bearing setting.** It is pasted verbatim into every
+   email. Treat it with the care you would give a hardcoded production hostname,
+   because that is exactly what it is.
+2. **Redirect URLs still have to be right**, because they cover the PKCE fallback
+   (`/auth/callback`, which stock templates use and which this app still passes as
+   `emailRedirectTo` on every `signUp`, `resend` and `resetPasswordForEmail`). If
+   the templates are ever reverted, or someone triggers a stock flow from the
+   dashboard, this list is what stands between a working link and a broken one.
+
+---
+
+### D1. Site URL
+
+**One value. No trailing slash. No path.**
+
+```
+https://rumbolatino.com
+```
+
+> **The trailing slash is a real trap.** The templates build their link as
+> `{{ .SiteURL }}/auth/confirm?…`. If you enter `https://rumbolatino.com/` — which
+> is what a browser gives you when you copy from the address bar — every
+> confirmation link in every email becomes
+> `https://rumbolatino.com//auth/confirm?…`, with a doubled slash. Whether that
+> resolves depends on how the host normalises paths, and you will find out from
+> customers rather than from a test. Delete the trailing slash.
+
+**Pick the host your employers actually land on.** If `rumbolatino.com` redirects
+to `www.rumbolatino.com` (or the reverse), put the **destination** here, not the
+one that redirects. A 301 in the middle of an auth link is one more place for a
+query string to be dropped.
+
+Site URL is also the fallback: when Supabase rejects a `redirectTo` for not being
+on the allow-list, it sends the user here instead of erroring. That is the
+mechanism behind "the link just goes to the home page".
+
+---
+
+### D2. Redirect URLs
+
+The allow-list. Add each entry with **Add URL**; they are stored one per line.
+
+**Paste all four for production:**
 
 ```
 https://rumbolatino.com/auth/callback
+https://rumbolatino.com/auth/callback**
 https://rumbolatino.com/auth/confirm
-https://www.rumbolatino.com/auth/callback
-https://www.rumbolatino.com/auth/confirm
+https://rumbolatino.com/auth/confirm**
 ```
 
-Add for each other environment you use:
+Add the same four for `www.` if that host serves the app too.
+
+#### Why the `**` duplicates are not redundant
+
+This application never sends a bare callback URL. It sends the destination as a
+query parameter:
 
 ```
-https://<preview-domain>/auth/callback
-https://<preview-domain>/auth/confirm
-http://localhost:3000/auth/callback
-http://localhost:3000/auth/confirm
+https://rumbolatino.com/auth/callback?next=%2Fempleadores
+https://rumbolatino.com/auth/callback?next=%2Fempleadores%2Fnueva-contrasena
 ```
 
-Vercel preview deployments get a new hostname per deploy. Supabase accepts a
-wildcard for that case:
+(See `callbackUrl()` in `lib/services/employer-account.ts`.)
+
+Supabase matches allow-list entries against the **whole URL, query string
+included**, using glob patterns — not against the path alone. So the plain entry
+`https://rumbolatino.com/auth/callback` does not necessarily match a URL that
+carries `?next=…`. The `**` form does: it matches any sequence of characters,
+separators included.
+
+Both forms are listed because the cost of the redundant entry is nothing and the
+cost of guessing wrong is a silent failure discovered by a customer.
+
+#### The glob rules, so the patterns you write mean what you think
+
+| Pattern | Matches |
+| --- | --- |
+| `*` | any run of characters that are **not** `.` or `/` |
+| `**` | any sequence at all, including `.` and `/` |
+| `?` | exactly one non-separator character |
+
+Two consequences people trip over:
+
+- **`*` does not cross a dot or a slash.** `https://*.rumbolatino.com/**` matches
+  `https://app.rumbolatino.com/…` but **not** `https://a.b.rumbolatino.com/…`.
+- **`?` is a wildcard, not a literal question mark.** Never write a query string
+  into a pattern — `…/auth/callback?next=*` does not mean what it looks like. Use
+  `**` instead.
+
+#### Scope the wildcards
+
+`**` after a full origin and path prefix is fine — it can only ever match deeper
+on a host you control. What is **not** fine is a wildcard in the host part broad
+enough to include somebody else's:
 
 ```
-https://*-<your-vercel-team>.vercel.app/auth/callback
-https://*-<your-vercel-team>.vercel.app/auth/confirm
+https://*/auth/callback          <-- NO. Any host on the internet.
+https://**.vercel.app/**         <-- NO. Anyone's Vercel deployment.
 ```
 
-Keep the wildcard scoped to your own Vercel team. A broad `https://*/auth/callback`
-would let any host receive an auth redirect from your project.
+Either one turns your project into a redirector that authenticates a user and
+then hands them to a stranger's page. Keep wildcards to the path, and to hostname
+patterns that are unambiguously yours.
 
-**Remove** these once the new templates are live and no old links can still be
-clicked (about 24 hours after the switch — the previous verification token's
-lifetime):
+---
+
+### D3. Local development
+
+Add these so you can run the flow on your machine:
+
+```
+http://localhost:3000/auth/callback**
+http://localhost:3000/auth/confirm**
+```
+
+`http://`, not `https://`. Note that local development uses the **same Supabase
+project and therefore the same Site URL**, so a `token_hash` template will build
+links pointing at production even when you triggered them locally. Two ways
+around it, in order of preference:
+
+1. Use a separate Supabase project for local work, with its own Site URL.
+2. Trigger the stock `{{ .ConfirmationURL }}` (PKCE) flow locally, which honours
+   the `emailRedirectTo` this app sends from the request host and therefore comes
+   back to `localhost`.
+
+This is not a bug in the setup — it is what "the Site URL is baked into the
+email" means, and it is the same reason the value has to be exactly right.
+
+---
+
+### D4. Vercel preview deployments
+
+Preview builds get a new hostname per deploy, so they cannot be listed
+individually. Use a pattern anchored to your own team slug:
+
+```
+https://*-<your-vercel-team-slug>.vercel.app/auth/callback**
+https://*-<your-vercel-team-slug>.vercel.app/auth/confirm**
+```
+
+Find the slug in any preview URL: `my-app-git-branch-<slug>.vercel.app`.
+
+Previews have the same Site URL problem as localhost (D3). Treat preview
+authentication as a smoke test of the code path, and do the real verification
+against production.
+
+---
+
+### D5. Verify it, do not assume it
+
+The failure mode here is silence, so check rather than trust.
+
+**Site URL — read it out of a real email.** Register a test account and look at
+the link in the message that arrives. It must read:
+
+```
+https://rumbolatino.com/auth/confirm?token_hash=…&type=signup&next=/empleadores
+```
+
+Check specifically for: the right host, **one** slash before `auth`, and the
+`type` and `next` parameters present. This one message tells you whether Site URL
+and the templates are both correct.
+
+**Redirect URLs — check the PKCE path.** Temporarily restore Supabase's stock
+"Confirm signup" template (just `{{ .ConfirmationURL }}`), register another test
+account, and confirm the link lands on `/empleadores` rather than on the home
+page. Landing on the home page means the `emailRedirectTo` was rejected and
+replaced by the Site URL — the exact symptom this list exists to prevent. Restore
+the `token_hash` template afterwards.
+
+If you would rather not touch the templates, the same check works from the SQL
+editor or any HTTP client by calling the recover endpoint and reading the link
+that arrives.
+
+---
+
+### D6. Set `NEXT_PUBLIC_SITE_URL` to match
+
+In Vercel → Settings → Environment Variables, for **Production**:
+
+```
+NEXT_PUBLIC_SITE_URL=https://rumbolatino.com
+```
+
+Same value as Site URL, same no-trailing-slash rule. Without it the app derives
+its origin from the request headers, which is correct in most deployments and
+wrong the moment a proxy rewrites the host. Setting it explicitly in production
+removes the question.
+
+Leave it **unset** on Preview, so preview deployments build redirects back to
+themselves rather than to production.
+
+---
+
+### D7. Retire the old entries
+
+If the allow-list still carries the pre-switch paths, leave them for about 24
+hours — the old verification token's lifetime — so links already sitting in
+mailboxes keep resolving through the forwarding shims. Then remove:
 
 ```
 https://rumbolatino.com/empleadores/verificar

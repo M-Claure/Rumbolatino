@@ -233,7 +233,21 @@ export async function registerEmployer(
   }
 
   // Already registered. Identical response, no write, no email of our own.
-  if (isExistingAccount(user)) return { email };
+  if (isExistingAccount(user)) {
+    // Logged because this path is INVISIBLE from the outside — by design — and
+    // that makes it the hardest failure to diagnose during setup: re-testing
+    // with an address you already used shows the check-your-email screen and
+    // sends nothing, which looks exactly like a broken mail transport.
+    //
+    // The address itself is NOT logged. It belongs to a customer, and a server
+    // log is read by more people than their mailbox is.
+    console.info(
+      "[employers] sign-up for an address that already has an account. No email was " +
+        "sent, and the response is deliberately identical to a new registration. If " +
+        "you are testing delivery, use an address that has never been registered.",
+    );
+    return { email };
+  }
 
   // Written from the service role, so it exists before the person ever comes
   // back from their mailbox. A failure here is NOT fatal: `/auth/confirm`
@@ -337,7 +351,15 @@ export async function resendEmployerVerification(email: string, headers: Headers
       "Enviamos demasiados correos a esta dirección. Espera unos minutos e inténtalo otra vez.",
     );
   }
-  console.warn(`[employers] resend returned ${error.status ?? "?"} ${error.code ?? ""} ${error.message}`);
+  // Swallowed on purpose — see above — but never silent in the LOG. An SMTP
+  // failure surfaces here and nowhere the user can see, so this line is what
+  // says whether delivery is configured at all.
+  console.warn(
+    `[employers] resend returned ${error.status ?? "?"} ${error.code ?? ""} ${error.message}. ` +
+      "A 5xx mentioning SMTP means Supabase could not hand the message to Resend: check " +
+      "Project Settings -> Authentication -> SMTP Settings, and that the Resend domain " +
+      "shows as Verified.",
+  );
 }
 
 /**
