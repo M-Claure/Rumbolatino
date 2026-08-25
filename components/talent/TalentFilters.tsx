@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CATEGORY_OPTIONS, AVAILABILITY_LABELS } from "@/lib/talent/taxonomy";
-import { TALENT_AVAILABILITIES } from "@/types/talent";
+import { CATEGORY_OPTIONS } from "@/lib/talent/taxonomy";
 import type { TalentSearchFilters } from "@/types";
 import { UseMyLocation } from "@/components/UseMyLocation";
 
@@ -20,6 +19,15 @@ import { UseMyLocation } from "@/components/UseMyLocation";
  * language-as-origin filter. This product does not collect any of that, and a
  * filter would be a back door into the same information — see the filter
  * discipline note in `lib/talent/taxonomy.ts` before adding a field.
+ *
+ * No AVAILABILITY dropdown either, and that one is a different argument: it is
+ * not unsafe, it is empty. `talent-publish.ts` stamps every listing `flexible`
+ * because the publish step is one checkbox and nobody is asked for a start date,
+ * so three of the four options returned nobody and the fourth returned everyone
+ * — a control that looks like it narrows a search and does not. The filter still
+ * exists below the UI (`TalentSearchQuery`, `talent_search`), so a URL carrying
+ * `?availability=` keeps working; if the funnel ever asks for a start date, put
+ * the dropdown back rather than inventing a second capture surface here.
  */
 export function TalentFilters({
   filters,
@@ -128,18 +136,6 @@ export function TalentFilters({
       </div>
 
       <div className="mt-3 flex flex-wrap items-end gap-3">
-        <label className="block min-w-[14rem] flex-1">
-          <span className="text-sm font-semibold text-text-primary">Disponibilidad</span>
-          <select name="availability" defaultValue={filters.availability ?? ""} className={field}>
-            <option value="">Cualquiera</option>
-            {TALENT_AVAILABILITIES.map((a) => (
-              <option key={a} value={a}>
-                {AVAILABILITY_LABELS[a]}
-              </option>
-            ))}
-          </select>
-        </label>
-
         <button
           type="submit"
           className="inline-flex items-center justify-center rounded-full bg-accent px-6 py-3 text-sm font-semibold text-accent-on transition hover:bg-accent-hover"

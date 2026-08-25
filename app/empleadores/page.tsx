@@ -46,7 +46,7 @@ export function generateMetadata(): Metadata {
     robots: { index: false, follow: false },
     description:
       "Busca personas capacitadas y listas para trabajar: por nombre, por oficio, habilidad o " +
-      "certificación, por cercanía y por disponibilidad.",
+      "certificación, y por cercanía.",
   };
 }
 
@@ -111,13 +111,17 @@ export default async function EmpleadoresPage({
           What this page searches is stated before the form, not left to the box.
           The previous wording pointed at a city filter that `0011` removed and
           promised an identification step that no longer exists, so the two
-          sentences an employer read first described a different page.
+          sentences an employer read first described a different page. It named
+          "disponibilidad" for the same reason and it went the same way when that
+          dropdown was removed — see the note in `TalentFilters`. This paragraph
+          and `generateMetadata`'s description must both list only the filters the
+          bar actually renders.
         */}
         <p className="max-w-2xl text-base leading-snug text-text-secondary">
           Aquí se buscan <strong>personas</strong>, no empleos: cada una terminó su currículum y
           pidió aparecer en esta lista. Busca por su nombre si ya sabes a quién quieres, o por el
-          oficio, la habilidad o la certificación que necesitas, y acota por cercanía y
-          disponibilidad. Cada currículum que descargues queda registrado a nombre de tu cuenta.
+          oficio, la habilidad o la certificación que necesitas, y acota por cercanía. Cada
+          currículum que descargues queda registrado a nombre de tu cuenta.
         </p>
       </header>
 
