@@ -125,7 +125,7 @@ the same ceiling.
 | `lib/employers/` | the ONE login: the gate · the namespaced session clients · pure email/password policy · what both auth callbacks share |
 | `lib/auth-redirect.ts` | pure open-redirect guard for `/auth/*` — allow-listed `?next=` |
 | `app/auth/` | `confirm` (`token_hash` → `verifyOtp`, any device) · `callback` (PKCE `code`) |
-| `lib/talent/` | directory taxonomy (code constants) · deterministic classifier · résumé→profile projection with the public/contact split |
+| `lib/talent/` | directory taxonomy (code constants) · deterministic classifier · résumé→profile projection with the public/contact split · résumé delivery (preview vs download) |
 | `lib/services/answer-pipeline.ts` | the spec §9 answer pipeline |
 | `lib/resume/` | generator · HTML renderer · PDF (two renderers: puppeteer local, `@sparticuz/chromium` serverless) · **artifact writer** (saves the PDF on every generation) · source tracing · **analyzer** (improvement loop) · **proofreader** (final spelling/grammar/format pass before finalize) |
 | `lib/rate-limit/` | pure policy (limits + keys) · `RateLimiter` iface · memory/no-op/Postgres impls |
@@ -433,6 +433,29 @@ the directory calls a model**: the category comes from a keyword classifier
   which is deliberately a separate function so `grep -rn
   getServiceResumeFileStore` lists every place that can read another user's file.
   The bucket's own policies are untouched.
+- **Reading a résumé is the PRIMARY action; downloading is the secondary one.**
+  `?inline=1` on that same route flips `Content-Disposition` to `inline`, which is
+  what `components/talent/ResumePreview.tsx` frames. Choosing whom to call takes
+  ten seconds of looking at a résumé, and when downloading was the only way to
+  look, an employer comparing six people collected six PDFs and wanted one — files
+  that outlive the session, the listing, and any later decision to unpublish.
+  **A preview is the same disclosure as a download and is treated identically**:
+  same session gate, same `contact_reveal` allowance, same `contact_reveals` row,
+  because they are the same bytes carrying the same name, email and phone. A
+  cheaper preview would be a hole drilled through the one limit here that protects
+  people. `lib/talent/resume-delivery.ts` is pure and holds the disposition, the
+  filename (rebuilt from the slug, so a path segment can never reach a response
+  header) and the header set —
+  `tests/unit/talent-resume-delivery.test.ts` asserts the two modes differ by the
+  disposition ALONE, so that claim cannot quietly stop being true. Because the
+  frame renders a PAGE, the inline path returns an HTML refusal instead of the
+  JSON envelope: a rate-limited employer must not read `{"error":…}` inside the
+  preview. `attachment` stays the default so every link written before the preview
+  existed is unchanged. Consequences worth knowing: the frame is mounted only when
+  the employer opens it (never eagerly across a page of 24 results) and stays
+  mounted once opened, so reopening spends nothing; and some browsers — iOS Safari
+  above all — will not render a PDF in an iframe and fail *silently*, which is why
+  the "ábrelo en otra pestaña" link is always offered rather than shown on a guess.
 - **`contact_reveal` is the limit that matters** — the only one in the product
   protecting people rather than infrastructure. `employer_register` is capped at
   or below it so minting fresh "employers" is not a way around the per-identity

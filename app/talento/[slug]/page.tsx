@@ -5,6 +5,7 @@ import { readPublicProfile } from "@/lib/services/talent-directory";
 import { checkEmployerGate, resolveEmployerSession } from "@/lib/employers/session";
 import { EmployerBar } from "@/components/employers/EmployerBar";
 import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailable";
+import { ResumePreview } from "@/components/talent/ResumePreview";
 import {
   AVAILABILITY_LABELS,
   YEARS_BUCKET_LABELS,
@@ -123,13 +124,11 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
             <Row label="LinkedIn" value={contact.linkedInUrl} href={contact.linkedInUrl} />
           )}
         </dl>
+        {/* Read it here, or keep a copy — in that order. See `ResumePreview`:
+            both spend a reveal, so the cheaper-for-the-candidate option is the
+            one that leaves no file behind. */}
         {contact?.resumePdfPath && (
-          <a
-            href={`/api/talent/${encodeURIComponent(profile.slug)}/resume`}
-            className="mt-4 inline-flex items-center justify-center rounded-full bg-accent px-6 py-3 text-sm font-semibold text-accent-on transition hover:bg-accent-hover"
-          >
-            Descargar currículum (PDF)
-          </a>
+          <ResumePreview slug={profile.slug} name={profile.displayName} />
         )}
       </section>
 

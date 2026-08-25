@@ -18,6 +18,15 @@ the email bodies, see [`auth-email-templates.md`](./auth-email-templates.md).
 | `/talento/[slug]` | public, `noindex` | verified session, `noindex` |
 | `GET /api/talent/search` | public | 401 without a session |
 | `GET /api/talent/:slug/resume` | public | 401 without a session |
+| `GET /api/talent/:slug/resume?inline=1` | did not exist | 401 without a session — the preview frame |
+
+Both modes of the résumé route are the **same disclosure**, so they are gated,
+counted and audited identically — a preview spends a `contact_reveal` and writes a
+`contact_reveals` row exactly as a download does. Reading in place is offered
+first because it is the option that leaves no copy behind: a PDF on somebody's
+laptop outlives the session, the listing and any later decision to unpublish, and
+an employer comparing six candidates only wanted one of them. See
+`components/talent/ResumePreview.tsx` and `lib/talent/resume-delivery.ts`.
 
 The indexable surface **moved** rather than disappearing. A gated page cannot be
 crawled — a crawler has no account — and a login wall in a search index is worse

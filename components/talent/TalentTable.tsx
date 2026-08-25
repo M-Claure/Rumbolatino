@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { TalentProfilePublic } from "@/types";
 import { YEARS_BUCKET_LABELS, labelForCategory } from "@/lib/talent/taxonomy";
+import { ResumePreview } from "@/components/talent/ResumePreview";
 
 /**
  * The directory as a table — one row per candidate, scannable top to bottom.
@@ -9,17 +10,20 @@ import { YEARS_BUCKET_LABELS, labelForCategory } from "@/lib/talent/taxonomy";
  * the same handful of attributes, and a grid of tiles makes you re-find each one
  * in a different place on every card. Fixed columns let the eye run straight down.
  *
- * ── No client JavaScript at all ─────────────────────────────────────────────
- * The CV column is a plain `<a>`. The route sets `Content-Disposition:
- * attachment`, so the browser downloads it — no fetch, no blob, no state. This
- * component was a Client Component with a modal and an identify-first form until
- * downloads were opened to everyone; with the gate gone there is nothing left
- * for JavaScript to do, so it went back to being a Server Component.
+ * ── Still a Server Component; the CV column is the one exception ────────────
+ * The résumé cell renders `ResumePreview`, which is a Client Component because
+ * reading a résumé in place needs a dialog. Nothing else here does: the rest of
+ * the row is text and links, so the table itself stays server-rendered and the
+ * interactive part is scoped to one cell.
  *
- * Be clear about the trade that made this possible: the résumé carries the
- * person's full name, email and phone, so this column hands those to anyone with
- * the page. That is the product decision (see the route's own note); the people
- * listed here are told exactly what employers will see before they opt in.
+ * ── Reading beats downloading, so it is the primary button ──────────────────
+ * Choosing whom to call takes ten seconds of looking at a résumé. When the only
+ * way to look was to download, an employer comparing six people collected six
+ * PDFs and wanted one — and those files outlive the listing and any later
+ * decision to unpublish. "Ver currículum" leaves nothing behind; "Descargar PDF"
+ * is still right there for the résumé they mean to keep. Both spend the same
+ * `contact_reveal` allowance and are logged the same way, because both hand over
+ * the same bytes — see `ResumePreview` and the route.
  */
 export function TalentTable({ profiles }: { profiles: TalentProfilePublic[] }) {
   return (
@@ -68,12 +72,7 @@ export function TalentTable({ profiles }: { profiles: TalentProfilePublic[] }) {
                   {YEARS_BUCKET_LABELS[p.yearsBucket]}
                 </td>
                 <td className="px-4 py-3 align-top">
-                  <a
-                    href={`/api/talent/${encodeURIComponent(p.slug)}/resume`}
-                    className="inline-block whitespace-nowrap rounded-full bg-accent px-4 py-2 text-xs font-semibold text-accent-on transition hover:bg-accent-hover"
-                  >
-                    Descargar PDF
-                  </a>
+                  <ResumePreview slug={p.slug} name={p.displayName} variant="compact" />
                 </td>
               </tr>
             );

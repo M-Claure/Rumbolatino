@@ -141,9 +141,11 @@ export const LIMITS: Record<LimitedOperation, LimitRule> = {
       "THE limit that matters. Every hit hands out a real person's phone number, so this " +
       "is the only rate limit here protecting people rather than infrastructure. A " +
       "recruiter shortlists a handful in a sitting; forty an hour is well past any honest " +
-      "session and far short of a useful harvest. Since the employer form was removed this " +
-      "is keyed by IP and is the ONLY ceiling left on bulk collection — lowering it is " +
-      "cheap, raising it is a real decision.",
+      "session and far short of a useful harvest. Keyed by the employer ACCOUNT, so changing " +
+      "networks does not reset it, and it is the ONLY ceiling left on bulk collection — " +
+      "lowering it is cheap, raising it is a real decision. Note that PREVIEWING a résumé " +
+      "spends one of these too (`?inline=1` on the same route): it is the same bytes and the " +
+      "same disclosure, and a cheaper preview would be a way around this number.",
   },
   employer_register: {
     limit: 10,
