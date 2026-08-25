@@ -1,11 +1,13 @@
 import "server-only";
+import type { AuthError, SupabaseClient } from "@supabase/supabase-js";
 import { getEnv } from "@/lib/env";
 import { Errors } from "@/lib/errors";
 import { getEmployerStore } from "@/lib/repositories";
 import { clientIp } from "@/lib/rate-limit/policy";
 import { enforceRateLimit } from "@/lib/services/usage-guard";
 import { getEmployerSupabaseClient } from "@/lib/employers/session";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { RECOVERY_DESTINATION } from "@/lib/employers/auth-callback";
+import { absoluteUrl } from "@/lib/auth-redirect";
 import {
   EMAIL_REJECTION_MESSAGES,
   PASSWORD_RULE_TEXT,
@@ -14,45 +16,62 @@ import {
 } from "@/lib/employers/policy";
 
 /**
- * Sign-up, sign-in and the two email flows for employer accounts.
+ * Employer accounts: registration, sign-in, verification, recovery, sign-out.
  *
- * ── Where the account actually lives ────────────────────────────────────────
- * In Supabase Auth. We do not hash a password, mint a verification token, or
- * time one out — `auth.users` already does all of that, correctly, and
- * `employers.id` was declared `references auth.users(id)` in `0010` precisely so
- * this would be the shape. What this module owns is the policy around it and the
- * profile row.
+ * ── Supabase Auth owns ALL of it now ────────────────────────────────────────
+ * Account, password hashing, sessions, refresh — and, as of this change, the
+ * confirmation email, the recovery email, the tokens inside them and their
+ * lifetimes. This module validates input, calls the right Supabase method, and
+ * translates the answer into Spanish. It mints no credentials of its own.
  *
- * ── The profile row is written at VERIFICATION, not at sign-up ──────────────
- * This is the important decision in the file, and it is a security one.
+ * ── This REVERSES the design in `0013` and the older half of ────────────────
+ *    `docs/employer-accounts.md`, and the reason is worth keeping
+ * That design moved verification off GoTrue because it could not be shipped on
+ * it: the built-in sender is capped at a handful of messages an hour and only
+ * delivers to addresses inside the Supabase organisation, so real sign-ups got
+ * "revisa tu correo" and an empty inbox with no error anywhere. A second
+ * objection was that a PKCE confirmation link only worked in the browser that
+ * signed up, which is the wrong browser for most of this audience.
  *
- * With email confirmation on, `signUp` for an address that ALREADY has an
- * account deliberately does not say so — it returns a user-shaped object with no
- * identities, so the endpoint cannot be used to enumerate who has an account.
- * That means a sign-up response cannot be trusted to identify a new user. If we
- * wrote `employers` from it, then signing up as `ana@empresa.com` a second time
- * would let an attacker overwrite the real Ana's company and contact name — an
- * unauthenticated write to another account's row.
+ * Both are now answered, which is what makes native flows correct here rather
+ * than merely conventional:
  *
- * So sign-up stores the company and the person's name in the auth user's
- * metadata and writes NOTHING to our table. `ensureEmployerProfile` in
- * `lib/employers/session.ts` writes the row from an authenticated session, on the
- * first gated request after the link has been clicked — one writer, and it can
- * only ever write the row belonging to the session in front of it.
+ *   - **Resend as Supabase Custom SMTP** replaces the built-in sender entirely.
+ *     Delivery, throughput and bounce visibility become Resend's, and the
+ *     silent-drop failure mode goes with it.
+ *   - **`token_hash` links to `/auth/confirm`** carry no PKCE verifier, so they
+ *     work on any device. See `docs/auth-email-templates.md`.
+ *
+ * What that buys is not just less code: password-reset tokens, single-use
+ * enforcement, expiry and replay protection stop being ours to get right, and
+ * `setEmployerPassword` no longer needs `auth.admin.updateUserById` — an API
+ * that will change ANY user's password and was previously guarded only by our
+ * own token check.
+ *
+ * ── Consequence for configuration, stated once ──────────────────────────────
+ * **Supabase's "Confirm email" must now be ON**, the reverse of what `0013`
+ * required. With it on, `signUp` returns no session and `signInWithPassword`
+ * refuses an unconfirmed address, so the confirmation is enforced by GoTrue and
+ * not merely by our gate. See `AUTH_PRODUCTION_SETUP.md`.
+ *
+ * The previous token machinery (`lib/employers/tokens.ts`, the
+ * `employer_email_tokens` table, `mcv_consume_employer_token`) is deliberately
+ * left in place and unused. It is the rollback: reverting this commit restores a
+ * working flow with no database migration. Drop it only once native delivery has
+ * been observed in production.
  */
 
-/** What the client is told after a sign-up. Deliberately identical either way. */
-export interface EmployerSignUpResult {
-  /** The address the link went to, echoed so the UI can show it. */
-  readonly email: string;
-}
-
 /**
- * Absolute base URL for the links we ask Supabase to email.
+ * Absolute base URL for the links Supabase emails on our behalf.
  *
  * Header-derived by default so preview deployments and both brand domains each
- * send links back to themselves. `NEXT_PUBLIC_SITE_URL` overrides for the case
- * where a proxy rewrites the host — see the note on it in `lib/env.ts`.
+ * send links back to themselves; `NEXT_PUBLIC_SITE_URL` overrides for the case
+ * where a proxy rewrites the host.
+ *
+ * Whatever this resolves to must ALSO be on Supabase's redirect allow-list
+ * (Authentication → URL Configuration → Redirect URLs). A destination that is
+ * not on that list is silently replaced by the project's Site URL, and the
+ * employer lands on the home page instead of the directory with no error to see.
  */
 export function siteOrigin(headers: Headers): string {
   const configured = getEnv().NEXT_PUBLIC_SITE_URL;
@@ -60,118 +79,274 @@ export function siteOrigin(headers: Headers): string {
 
   const host = headers.get("x-forwarded-host") ?? headers.get("host");
   if (!host) {
-    // Not recoverable: a relative redirect in an email is useless, and guessing
+    // Not recoverable: a relative link in an email is useless, and guessing
     // localhost would send production users to their own machine.
     throw Errors.internal(
       "No pudimos construir el enlace de confirmación. Configura NEXT_PUBLIC_SITE_URL.",
     );
   }
-  const proto = headers.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
+  const proto =
+    headers.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   return `${proto}://${host}`;
+}
+
+/**
+ * The URL Supabase is told to send people back to.
+ *
+ * Only reached by the STOCK templates, which use `{{ .ConfirmationURL }}` and
+ * come back as a PKCE code. The recommended templates ignore this and point at
+ * `/auth/confirm` themselves — but this still has to be right, because it is
+ * also the value Supabase checks against the redirect allow-list.
+ */
+function callbackUrl(headers: Headers, next: string): string {
+  const origin = siteOrigin(headers);
+  return absoluteUrl(origin, `/auth/callback?next=${encodeURIComponent(next)}`);
 }
 
 function assertAcceptableCredentials(email: string, password: string): string {
   const verdict = inspectEmployerEmail(email);
-  if (verdict.rejection) {
-    throw Errors.validation(EMAIL_REJECTION_MESSAGES[verdict.rejection]);
-  }
-  const passwordProblem = inspectPassword(password);
-  if (passwordProblem) throw Errors.validation(passwordProblem.message);
+  if (verdict.rejection) throw Errors.validation(EMAIL_REJECTION_MESSAGES[verdict.rejection]);
+  const problem = inspectPassword(password);
+  if (problem) throw Errors.validation(problem.message);
   return verdict.normalized;
 }
 
+/**
+ * Turn a GoTrue failure into something a Spanish-speaking user can act on,
+ * without echoing an implementation detail.
+ *
+ * Supabase answers in English, with messages that change between releases, so
+ * this matches on the stable `code` first and falls back to the text. Anything
+ * unrecognised becomes one generic sentence and a server-side log — a raw
+ * upstream error in the UI tells an attacker about the stack and tells the user
+ * nothing.
+ */
+export function translateAuthError(error: AuthError, context: string): never {
+  const code = error.code ?? "";
+  const message = error.message ?? "";
+
+  if (code === "over_email_send_rate_limit" || /rate limit|too many requests/i.test(message)) {
+    throw Errors.rateLimited(
+      "Enviamos demasiados correos a esta dirección. Espera unos minutos e inténtalo otra vez.",
+    );
+  }
+  if (code === "weak_password" || /password/i.test(message)) {
+    throw Errors.validation(`Esa contraseña no cumple los requisitos. ${PASSWORD_RULE_TEXT}`);
+  }
+  if (code === "email_address_invalid" || /invalid.*email/i.test(message)) {
+    throw Errors.validation(EMAIL_REJECTION_MESSAGES.malformed);
+  }
+  if (code === "signup_disabled" || /signups? not allowed|disabled/i.test(message)) {
+    console.error(`[employers] ${context}: sign-ups are disabled on the Supabase project.`);
+    throw Errors.serviceUnavailable(
+      "Ahora mismo no podemos crear cuentas nuevas. Vuelve a intentarlo más tarde.",
+    );
+  }
+
+  console.error(`[employers] ${context}: ${error.status ?? "?"} ${code} ${message}`);
+  throw Errors.internal("No pudimos completar la operación. Vuelve a intentarlo en un momento.");
+}
+
+/**
+ * Did `signUp` just describe an account that ALREADY existed?
+ *
+ * With "Confirm email" on, Supabase deliberately refuses to tell a caller that
+ * an address is taken — it returns a user-shaped object with a randomised id and
+ * an EMPTY `identities` array instead of an error. That is the documented signal
+ * and the only one available.
+ *
+ * Detecting it matters for two separate reasons:
+ *
+ *   1. the response must stay identical to a real registration, or this endpoint
+ *      becomes the account-enumeration oracle the whole flow avoids being;
+ *   2. the `employers` row must NOT be written from it. The id is not a real
+ *      `auth.users` row, so the write would either fail the foreign key or — if
+ *      Supabase ever returns the genuine id — overwrite a stranger's company
+ *      name with whatever this caller typed.
+ */
+export function isExistingAccount(user: { identities?: unknown[] | null } | null): boolean {
+  return Boolean(user && Array.isArray(user.identities) && user.identities.length === 0);
+}
+
+export interface EmployerSignUpResult {
+  /** The address the link went to, echoed so the check-your-email screen can show it. */
+  readonly email: string;
+}
+
+/**
+ * Create an account and let Supabase send the confirmation.
+ *
+ * Answers the same way whether the address was new or already registered. The
+ * person who already had an account gets nothing new in their inbox — Supabase
+ * only re-sends for an address that is still unconfirmed — and finds their way
+ * back through "Olvidé mi contraseña", which is the flow that exists for exactly
+ * that and discloses nothing either.
+ */
 export async function registerEmployer(
   input: { company: string; contactName: string; email: string; password: string },
   headers: Headers,
 ): Promise<EmployerSignUpResult> {
   const ip = clientIp(headers);
-  // Two limits, because this one request does two costly things: it creates an
-  // account and it sends mail to an address the caller chose.
+  // Two limits: this one request creates an account AND causes mail to be sent
+  // to an address the caller chose.
   await enforceRateLimit("employer_register", { ip });
   await enforceRateLimit("employer_email", { ip });
 
   const email = assertAcceptableCredentials(input.email, input.password);
   const supabase = getEmployerSupabaseClient();
 
-  const { error } = await supabase.auth.signUp({
+  const { data, error } = await supabase.auth.signUp({
     email,
     password: input.password,
     options: {
-      emailRedirectTo: `${siteOrigin(headers)}/empleadores/verificar`,
-      // Carried on the auth user until the link is clicked — see the note above
-      // on why this is not written to `employers` yet.
+      emailRedirectTo: callbackUrl(headers, "/empleadores"),
+      // Carried on the auth user so the confirmation callback can rebuild the
+      // `employers` row if the write below never landed. Not a source of truth:
+      // the row written here is, and this is only ever read when there is none.
       data: { company: input.company, contact_name: input.contactName },
     },
   });
 
   if (error) {
-    // Supabase's own messages are English and sometimes internal. A password it
-    // rejects under its project policy is the one case worth translating, and the
-    // message must restate the WHOLE rule: `inspectPassword` already checked
-    // length and character classes, so reaching here means the project setting is
-    // stricter than this code — telling them "usa una más larga" would be a guess,
-    // and a wrong one if what is missing is a symbol.
-    if (/password/i.test(error.message)) {
-      throw Errors.validation(`Esa contraseña no cumple los requisitos. ${PASSWORD_RULE_TEXT}`);
+    // ── An explicit "already registered" must NOT become an error response ──
+    // Supabase normally hides this behind the empty-`identities` object handled
+    // below, but it says so plainly when "Confirm email" is off — and a
+    // deployment can end up in that state by a dashboard mistake or a rollback
+    // in progress. Letting it fall through to `translateAuthError` would return
+    // a 500 for taken addresses and a 200 for free ones, which is a working
+    // account-enumeration oracle assembled out of two correct-looking branches.
+    // So it takes the same silent path as every other "this address is taken".
+    if (
+      error.code === "user_already_exists" ||
+      error.code === "email_exists" ||
+      /already registered|already exists/i.test(error.message)
+    ) {
+      return { email };
     }
-    console.error(`[employers] sign-up failed: ${error.status ?? "?"} ${error.message}`);
+    translateAuthError(error, "sign-up failed");
+  }
+
+  const user = data.user;
+  if (!user) {
+    console.error("[employers] sign-up returned no user and no error");
     throw Errors.internal("No pudimos crear tu cuenta. Vuelve a intentarlo en un momento.");
   }
 
-  // Never branch the response on whether the address was already registered:
-  // that is exactly the enumeration Supabase is avoiding by not telling us.
+  // Already registered. Identical response, no write, no email of our own.
+  if (isExistingAccount(user)) return { email };
+
+  // Written from the service role, so it exists before the person ever comes
+  // back from their mailbox. A failure here is NOT fatal: `/auth/confirm`
+  // rebuilds the row from the metadata above, so a transient outage costs
+  // nothing the employer can see.
+  try {
+    await getEmployerStore().save({
+      id: user.id,
+      company: input.company,
+      contactName: input.contactName,
+      email,
+      emailVerifiedAt: null,
+      ip,
+    });
+  } catch (storeError) {
+    console.error(
+      "[employers] the account was created in Supabase Auth but the employers row was not " +
+        "written. /auth/confirm will rebuild it from user metadata:",
+      storeError,
+    );
+  }
+
   return { email };
 }
 
 export type SignInOutcome =
   | { readonly status: "ok" }
-  /** Correct credentials, mailbox never confirmed. A resend fixes it. */
+  /** Correct credentials, address unconfirmed. GoTrue refuses; a resend fixes it. */
   | { readonly status: "unverified"; readonly email: string };
 
+/**
+ * Sign in with a password.
+ *
+ * ── Why `unverified` is not an enumeration leak ─────────────────────────────
+ * GoTrue verifies the PASSWORD before it checks confirmation, so
+ * `email_not_confirmed` only ever comes back to someone who already supplied the
+ * correct password for that address. They have proved more than the existence of
+ * the account. Every other failure — no such user, wrong password — collapses
+ * into one message.
+ */
 export async function signInEmployer(
   input: { email: string; password: string },
   headers: Headers,
 ): Promise<SignInOutcome> {
-  const ip = clientIp(headers);
-  await enforceRateLimit("employer_login", { ip });
+  await enforceRateLimit("employer_login", { ip: clientIp(headers) });
 
   const email = inspectEmployerEmail(input.email).normalized;
   const supabase = getEmployerSupabaseClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password: input.password });
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password: input.password,
+  });
 
   if (error) {
-    // The ONE distinction worth making. Answering this with "wrong password"
-    // would leave someone with correct credentials locked out and no idea why.
     if (error.code === "email_not_confirmed" || /email not confirmed/i.test(error.message)) {
       return { status: "unverified", email };
     }
-    // Everything else is deliberately one message: saying "this email has no
-    // account" turns the login form into an account-existence oracle.
+    if (error.code === "over_request_rate_limit" || /rate limit/i.test(error.message)) {
+      throw Errors.rateLimited(
+        "Demasiados intentos. Espera unos minutos y vuelve a intentarlo.",
+      );
+    }
+    // Deliberately ONE message. "This email has no account" would turn the login
+    // form into the oracle registration is careful not to be.
     throw Errors.unauthorized("Correo o contraseña incorrectos.");
   }
+  if (!data.user) throw Errors.unauthorized("Correo o contraseña incorrectos.");
 
-  // The `employers` row is NOT written here. `resolveEmployerSession` creates it
-  // on the first gated request, so there is exactly one place that does — see the
-  // note on `ensureEmployerProfile` for why it must be an authenticated read.
+  // Belt and braces: if the project's "Confirm email" were ever turned off, a
+  // session would arrive for an unconfirmed address and this is the only place
+  // left that would notice.
+  if (!data.user.email_confirmed_at) return { status: "unverified", email };
+
   return { status: "ok" };
 }
 
-/** Re-send the confirmation link. Rate limited hard: it sends mail. */
+/**
+ * Send the confirmation email again, through Supabase.
+ *
+ * ── The response never varies ───────────────────────────────────────────────
+ * Whether the address has an account, has a *confirmed* account, or has none at
+ * all, this resolves the same way. Supabase's own errors here are informative —
+ * "User already confirmed" is a clean statement that someone has an account —
+ * so they are logged and swallowed rather than returned. Rate limits are the one
+ * exception, because the caller genuinely needs to be told to wait.
+ */
 export async function resendEmployerVerification(email: string, headers: Headers): Promise<void> {
   await enforceRateLimit("employer_email", { ip: clientIp(headers) });
   const normalized = inspectEmployerEmail(email).normalized;
 
-  const { error } = await getEmployerSupabaseClient().auth.resend({
+  const supabase = getEmployerSupabaseClient();
+  const { error } = await supabase.auth.resend({
     type: "signup",
     email: normalized,
-    options: { emailRedirectTo: `${siteOrigin(headers)}/empleadores/verificar` },
+    options: { emailRedirectTo: callbackUrl(headers, "/empleadores") },
   });
-  // Errors are logged, not surfaced: whether an address has a pending
-  // confirmation is the same fact the sign-up path refuses to reveal.
-  if (error) console.error(`[employers] resend failed: ${error.status ?? "?"} ${error.message}`);
+
+  if (!error) return;
+  if (error.code === "over_email_send_rate_limit" || /rate limit/i.test(error.message)) {
+    throw Errors.rateLimited(
+      "Enviamos demasiados correos a esta dirección. Espera unos minutos e inténtalo otra vez.",
+    );
+  }
+  console.warn(`[employers] resend returned ${error.status ?? "?"} ${error.code ?? ""} ${error.message}`);
 }
 
-/** Start a password reset. Same silence, for the same reason. */
+/**
+ * Start a password recovery. Same silence, for the same reason.
+ *
+ * `resetPasswordForEmail` does not disclose whether the address exists, which is
+ * what lets the UI answer "si existe una cuenta, te enviamos…" honestly rather
+ * than as a polite fiction.
+ */
 export async function requestEmployerPasswordReset(
   email: string,
   headers: Headers,
@@ -179,98 +354,89 @@ export async function requestEmployerPasswordReset(
   await enforceRateLimit("employer_email", { ip: clientIp(headers) });
   const normalized = inspectEmployerEmail(email).normalized;
 
-  const { error } = await getEmployerSupabaseClient().auth.resetPasswordForEmail(normalized, {
-    redirectTo: `${siteOrigin(headers)}/empleadores/nueva-contrasena`,
+  const supabase = getEmployerSupabaseClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(normalized, {
+    redirectTo: callbackUrl(headers, RECOVERY_DESTINATION),
   });
-  if (error) console.error(`[employers] reset failed: ${error.status ?? "?"} ${error.message}`);
+
+  if (!error) return;
+  if (error.code === "over_email_send_rate_limit" || /rate limit/i.test(error.message)) {
+    throw Errors.rateLimited(
+      "Enviamos demasiados correos a esta dirección. Espera unos minutos e inténtalo otra vez.",
+    );
+  }
+  console.warn(
+    `[employers] password reset returned ${error.status ?? "?"} ${error.code ?? ""} ${error.message}`,
+  );
 }
 
 /**
- * Set a new password for whoever holds the recovery session.
+ * Set a new password for the CURRENT session.
  *
- * The authorization here IS the session: clicking the emailed link exchanges a
- * one-time code for one, so possession of a session on the employer cookie is
- * proof the mailbox was reached. There is deliberately no "current password"
- * field — the person using this flow is the one who does not know it.
+ * ── The authority is the session, and only the session ──────────────────────
+ * Reached in two ways, both of which mean Supabase has already decided this
+ * caller may act as this user: a recovery link exchanged for a session by
+ * `/auth/confirm`, or an employer already signed in. There is no token parameter
+ * to pass and none to forge.
+ *
+ * This replaced `auth.admin.updateUserById`, which the previous flow needed
+ * because its recovery token was ours and produced no session. That call changes
+ * ANY user's password given an id, so the whole of its safety was our own token
+ * check happening first — a single misordering away from an account takeover.
+ * `updateUser` can only ever affect the caller.
  */
 export async function setEmployerPassword(password: string): Promise<void> {
   const problem = inspectPassword(password);
   if (problem) throw Errors.validation(problem.message);
 
-  const supabase = getEmployerSupabaseClient();
-  const { data } = await supabase.auth.getUser();
-  if (!data.user) {
+  const supabase: SupabaseClient = getEmployerSupabaseClient();
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData.user) {
     throw Errors.unauthorized(
-      "El enlace para cambiar tu contraseña ya no es válido. Pide uno nuevo.",
+      "Ese enlace ya no sirve — caducan y solo se pueden usar una vez. Pide uno nuevo.",
     );
   }
 
   const { error } = await supabase.auth.updateUser({ password });
   if (error) {
-    console.error(`[employers] password update failed: ${error.status ?? "?"} ${error.message}`);
-    throw Errors.validation("No pudimos cambiar tu contraseña. Intenta con otra.");
+    if (error.code === "same_password" || /should be different/i.test(error.message)) {
+      throw Errors.validation("Elige una contraseña distinta a la que ya tenías.");
+    }
+    if (error.code === "weak_password" || /password/i.test(error.message)) {
+      throw Errors.validation(`Esa contraseña no cumple los requisitos. ${PASSWORD_RULE_TEXT}`);
+    }
+    if (error.code === "session_not_found" || error.status === 401) {
+      throw Errors.unauthorized(
+        "Tu sesión de recuperación caducó. Pide un enlace nuevo e inténtalo otra vez.",
+      );
+    }
+    console.error(
+      `[employers] password update failed: ${error.status ?? "?"} ${error.code ?? ""} ${error.message}`,
+    );
+    throw Errors.validation(
+      "No pudimos cambiar tu contraseña. Pide un enlace nuevo e inténtalo otra vez.",
+    );
   }
 
-  // A reset also confirms the address (Supabase marks it so), so someone who
-  // never clicked their sign-up link but did reset their password arrives at the
-  // directory verified, and the gate writes their profile row there.
+  // A completed recovery also proves the mailbox, and Supabase confirms the
+  // address as part of it. Mirror that onto our row so the operator view and the
+  // audit trail agree with Auth.
+  try {
+    await getEmployerStore().markEmailVerified(userData.user.id);
+  } catch (storeError) {
+    console.error("[employers] could not mirror verification after a reset:", storeError);
+  }
 }
 
 export async function signOutEmployer(): Promise<void> {
-  await getEmployerSupabaseClient().auth.signOut();
-}
-
-/**
- * Turn the one-time credential in an emailed link into a session.
- *
- * TWO shapes are accepted, and both are necessary:
- *
- *   ?code=…                      the PKCE exchange. This is what Supabase sends
- *                                back by default, because the sign-up that
- *                                started the flow was server-side with PKCE. It
- *                                requires the code-verifier cookie set at
- *                                sign-up, so it only works in the SAME browser.
- *
- *   ?token_hash=…&type=signup    the verifier-free path, which works when the
- *                                link is opened anywhere. This is the common
- *                                case — people read mail on a phone and signed
- *                                up on a laptop — but it only appears in the URL
- *                                if the project's email template is changed to
- *                                use `{{ .TokenHash }}` instead of
- *                                `{{ .ConfirmationURL }}`. See docs.
- *
- * Handling only the first would strand every cross-device click on an error
- * page, which is why both are here even though one needs an operator step.
- */
-export async function exchangeEmployerAuthCode(
-  url: URL,
-  /**
-   * REQUIRED, and deliberately not defaulted to `getEmployerSupabaseClient()`.
-   * This call creates a session, so its cookie writes have to land on the
-   * response the caller is about to return — see `employerClientForRoute`. A
-   * default here would make the broken form the easy one to reach for.
-   */
-  supabase: SupabaseClient,
-): Promise<boolean> {
-  const code = url.searchParams.get("code");
-  if (code) {
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
-    if (!error) return true;
-    console.error(`[employers] code exchange failed: ${error.message}`);
-    return false;
+  const supabase = getEmployerSupabaseClient();
+  // `local` clears this browser's session only. `global` would revoke every
+  // refresh token for the account, signing the person out of their other devices
+  // as a side effect of pressing "Salir" on a shared office machine.
+  const { error } = await supabase.auth.signOut({ scope: "local" });
+  if (error) {
+    // Not fatal, and never surfaced: the cookie is cleared either way, so the
+    // browser is signed out even when revoking upstream failed.
+    console.warn(`[employers] sign-out returned ${error.status ?? "?"} ${error.message}`);
   }
-
-  const tokenHash = url.searchParams.get("token_hash");
-  const type = url.searchParams.get("type");
-  if (tokenHash && (type === "signup" || type === "email" || type === "recovery")) {
-    const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type });
-    if (!error) return true;
-    console.error(`[employers] otp verify failed: ${error.message}`);
-    return false;
-  }
-
-  // Supabase puts its own failures here — an expired or already-used link.
-  const described = url.searchParams.get("error_description") ?? url.searchParams.get("error");
-  if (described) console.error(`[employers] link rejected upstream: ${described}`);
-  return false;
 }

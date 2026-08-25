@@ -1,33 +1,41 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { exchangeEmployerAuthCode } from "@/lib/services/employer-account";
-import { employerClientForRoute } from "@/lib/employers/session";
+import { RECOVERY_DESTINATION } from "@/lib/employers/auth-callback";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * GET /empleadores/recuperar/confirmar — where the password-reset email lands.
+ * GET /empleadores/recuperar/confirmar — where reset links used to land.
  *
- * Splitting the exchange from the form is what makes the flow work at all: the
- * link carries a one-time code that must be turned into a session (a cookie
- * write, so a route handler), and the form that follows is a page. Pointing the
- * email straight at the form would leave the code unexchanged and the page with
- * no authority to change anything.
+ * The same forwarding shim as `/empleadores/verificar`, for the same reason:
+ * reset emails sent before this change are still in mailboxes, and a template in
+ * the dashboard may still point here. Supabase-shaped parameters are handed to
+ * the callback that understands them, with the destination pinned to the
+ * password form; anything else becomes "pide un enlace nuevo".
  *
- * The response is constructed before the exchange and the cookies are written
- * onto it, for the same reason as `/empleadores/verificar` — see the long note
- * there. Without it the recovery session never reaches the browser and the form
- * turns everyone away with "el enlace ya no es válido".
+ * What this route no longer does is move a token of ours into an httpOnly
+ * cookie. There is no token of ours: `/auth/confirm` exchanges Supabase's
+ * `token_hash` for a recovery session, and the session is the authority.
  */
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
-  const ready = NextResponse.redirect(new URL("/empleadores/nueva-contrasena", url.origin));
 
-  const supabase = employerClientForRoute(request.cookies, ready.cookies);
-  const exchanged = await exchangeEmployerAuthCode(url, supabase);
-
-  if (!exchanged) {
-    return NextResponse.redirect(new URL("/empleadores/acceso?estado=enlace_invalido", url.origin));
+  if (url.searchParams.has("token_hash")) {
+    const forwarded = new URL("/auth/confirm", url.origin);
+    forwarded.search = url.search;
+    forwarded.searchParams.set("type", "recovery");
+    forwarded.searchParams.set("next", RECOVERY_DESTINATION);
+    return NextResponse.redirect(forwarded);
   }
-  return ready;
+
+  if (url.searchParams.has("code")) {
+    const forwarded = new URL("/auth/callback", url.origin);
+    forwarded.search = url.search;
+    forwarded.searchParams.set("next", RECOVERY_DESTINATION);
+    return NextResponse.redirect(forwarded);
+  }
+
+  return NextResponse.redirect(
+    new URL("/empleadores/acceso?estado=enlace_invalido", url.origin),
+  );
 }

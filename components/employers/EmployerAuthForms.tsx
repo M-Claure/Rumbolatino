@@ -1,14 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ApiError,
   registerEmployer,
   requestEmployerPasswordReset,
-  resendEmployerVerification,
   signInEmployer,
 } from "@/lib/client/api";
-import { MIN_PASSWORD_LENGTH, PASSWORD_RULE_TEXT } from "@/lib/employers/policy";
+import {
+  EMAIL_REJECTION_MESSAGES,
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_RULE_TEXT,
+  inspectEmployerEmail,
+  inspectPassword,
+} from "@/lib/employers/policy";
 
 /**
  * The only sign-in surface in the product.
@@ -20,14 +25,21 @@ import { MIN_PASSWORD_LENGTH, PASSWORD_RULE_TEXT } from "@/lib/employers/policy"
  * three. Keeping them together means switching costs no page load and the email
  * they already typed follows them across.
  *
- * ── Why the "check your inbox" state is a panel, not a redirect ─────────────
- * After registering, the account exists but cannot be used until a link is
- * clicked in another application. That is a dead end for the tab they are in, so
- * it has to say so plainly and offer the one useful action (send it again).
- * Redirecting to the directory would show them a login wall a second time with
- * no explanation.
+ * ── "Check your email" is a ROUTE now, not a panel here ─────────────────────
+ * It used to be a fourth panel. It is a page — `/empleadores/verifica-tu-correo`
+ * — because registration ends somewhere the person cannot act: the next step
+ * happens in a different application, often on a different device. A URL they
+ * can reload and come back to survives that; a state flag in this component does
+ * not.
+ *
+ * ── Validation happens here AND on the server ───────────────────────────────
+ * The rules come from `lib/employers/policy.ts`, which is pure and shared, so
+ * the message a user sees before submitting is the same string the server would
+ * have sent back. This is purely to save a round trip and an error banner —
+ * `registerEmployer` re-checks everything, and Supabase checks the password
+ * again after that.
  */
-type Panel = "signin" | "signup" | "reset" | "sent" | "check_inbox";
+type Panel = "signin" | "signup" | "reset" | "sent";
 
 const field =
   "mt-1 w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm outline-none focus:border-accent";
@@ -35,8 +47,14 @@ const primary =
   "inline-flex w-full items-center justify-center rounded-full bg-accent px-6 py-3 text-sm font-semibold text-accent-on transition hover:bg-accent-hover disabled:opacity-60";
 const link = "font-medium text-accent-dark hover:underline";
 
-export function EmployerAuthForms({ initialNotice }: { initialNotice?: string }) {
-  const [panel, setPanel] = useState<Panel>("signin");
+export function EmployerAuthForms({
+  initialNotice,
+  initialPanel,
+}: {
+  initialNotice?: string;
+  initialPanel?: Panel;
+}) {
+  const [panel, setPanel] = useState<Panel>(initialPanel ?? "signin");
   const [company, setCompany] = useState("");
   const [contactName, setContactName] = useState("");
   const [email, setEmail] = useState("");
@@ -45,8 +63,18 @@ export function EmployerAuthForms({ initialNotice }: { initialNotice?: string })
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(initialNotice ?? null);
 
+  /**
+   * A ref as well as the `busy` state, because they answer different questions.
+   * `busy` drives the disabled attribute on the next render; this blocks a
+   * second submit that arrives BEFORE that render — a double-click, or Enter
+   * held down — which `disabled` alone has always lost.
+   */
+  const inFlight = useRef(false);
+
   /** One place to run a call: clears the last error, and never leaves `busy` stuck. */
   async function run(action: () => Promise<void>) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -59,42 +87,55 @@ export function EmployerAuthForms({ initialNotice }: { initialNotice?: string })
           : "Algo salió mal. Vuelve a intentarlo en un momento.",
       );
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
+  }
+
+  /** Shared pre-flight. Returns the normalized address, or null after showing why not. */
+  function acceptEmail(): string | null {
+    const verdict = inspectEmployerEmail(email);
+    if (verdict.rejection) {
+      setError(EMAIL_REJECTION_MESSAGES[verdict.rejection]);
+      return null;
+    }
+    return verdict.normalized;
+  }
+
+  /** A full navigation, never a router push: the session lives in a cookie the server must read. */
+  function goTo(path: string) {
+    window.location.assign(path);
   }
 
   const submitSignIn = () =>
     run(async () => {
       const result = await signInEmployer({ email, password });
       if (result.status === "unverified") {
-        setPanel("check_inbox");
-        setNotice(
-          "Tu cuenta existe, pero todavía no confirmaste tu correo. Busca el mensaje que te enviamos.",
-        );
+        goTo(`/empleadores/verifica-tu-correo?correo=${encodeURIComponent(result.email)}`);
         return;
       }
-      // A full navigation, not a router push: the session arrived as a cookie on
-      // this response, and the gated page has to be rendered by the server with
-      // it already in place.
-      window.location.assign("/empleadores");
+      goTo("/empleadores");
     });
 
   const submitSignUp = () =>
     run(async () => {
-      await registerEmployer({ company, contactName, email, password });
-      setPanel("check_inbox");
+      const normalized = acceptEmail();
+      if (!normalized) return;
+      const problem = inspectPassword(password);
+      if (problem) {
+        setError(problem.message);
+        return;
+      }
+      const result = await registerEmployer({ company, contactName, email: normalized, password });
+      goTo(`/empleadores/verifica-tu-correo?correo=${encodeURIComponent(result.email)}`);
     });
 
   const submitReset = () =>
     run(async () => {
-      await requestEmployerPasswordReset(email);
+      const normalized = acceptEmail();
+      if (!normalized) return;
+      await requestEmployerPasswordReset(normalized);
       setPanel("sent");
-    });
-
-  const resend = () =>
-    run(async () => {
-      await resendEmployerVerification(email);
-      setNotice("Te enviamos el enlace otra vez. Puede tardar un par de minutos.");
     });
 
   return (
@@ -113,28 +154,17 @@ export function EmployerAuthForms({ initialNotice }: { initialNotice?: string })
         </p>
       )}
 
-      {panel === "check_inbox" && (
-        <div className="flex flex-col gap-3">
-          <h2 className="text-lg font-bold text-text-primary">Revisa tu correo</h2>
-          <p className="text-sm leading-snug text-text-secondary">
-            Enviamos un enlace a <strong>{email}</strong>. Ábrelo para confirmar tu cuenta y entrar
-            al directorio. Si no aparece, revisa tu carpeta de spam.
-          </p>
-          <button type="button" onClick={resend} disabled={busy} className={primary}>
-            {busy ? "Enviando…" : "Enviar el enlace otra vez"}
-          </button>
-          <button type="button" onClick={() => setPanel("signin")} className={`text-sm ${link}`}>
-            Volver a entrar
-          </button>
-        </div>
-      )}
-
       {panel === "sent" && (
         <div className="flex flex-col gap-3">
-          <h2 className="text-lg font-bold text-text-primary">Enlace enviado</h2>
+          <h2 className="text-lg font-bold text-text-primary">Revisa tu correo</h2>
+          {/*
+            Deliberately conditional wording. Saying "te enviamos un enlace"
+            outright would confirm that this address has an account here, which
+            is the one thing every response in this flow refuses to disclose.
+          */}
           <p className="text-sm leading-snug text-text-secondary">
-            Si <strong>{email}</strong> tiene una cuenta, ahí llegará un enlace para cambiar tu
-            contraseña.
+            Si <strong>{email}</strong> tiene una cuenta, ahí llegará un enlace para elegir una
+            contraseña nueva. El enlace caduca, así que úsalo pronto.
           </p>
           <button type="button" onClick={() => setPanel("signin")} className={`text-sm ${link}`}>
             Volver a entrar
@@ -222,17 +252,36 @@ export function EmployerAuthForms({ initialNotice }: { initialNotice?: string })
             {busy ? "Un momento…" : panel === "signin" ? "Entrar" : "Crear cuenta"}
           </button>
 
+          {panel === "signup" && (
+            <p className="text-xs leading-snug text-text-secondary">
+              Te enviaremos un correo para confirmar tu dirección. Tendrás que abrir ese enlace
+              antes de ver el directorio.
+            </p>
+          )}
+
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
             <button
               type="button"
               className={link}
-              onClick={() => setPanel(panel === "signin" ? "signup" : "signin")}
+              onClick={() => {
+                setError(null);
+                setNotice(null);
+                setPanel(panel === "signin" ? "signup" : "signin");
+              }}
             >
               {panel === "signin" ? "No tengo cuenta" : "Ya tengo cuenta"}
             </button>
             {panel === "signin" && (
-              <button type="button" className={link} onClick={() => setPanel("reset")}>
-                Olvidé mi contraseña
+              <button
+                type="button"
+                className={link}
+                onClick={() => {
+                  setError(null);
+                  setNotice(null);
+                  setPanel("reset");
+                }}
+              >
+                ¿Olvidaste tu contraseña?
               </button>
             )}
           </div>

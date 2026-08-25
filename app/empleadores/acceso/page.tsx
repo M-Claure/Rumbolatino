@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getBrandConfig } from "@/lib/brand/registry";
 import { getActiveBrandId } from "@/lib/brand/server";
-import { resolveEmployerSession } from "@/lib/employers/session";
+import { checkEmployerGate } from "@/lib/employers/session";
 import { EmployerAuthForms } from "@/components/employers/EmployerAuthForms";
 
 export const dynamic = "force-dynamic";
@@ -27,12 +27,40 @@ export function generateMetadata(): Metadata {
   };
 }
 
-/** Reasons a redirect can land here, as Spanish the visitor can act on. */
+/**
+ * Reasons a redirect can land here, as Spanish the visitor can act on.
+ *
+ * Each entry names what happened AND what to do about it. A bare "error" leaves
+ * someone holding a dead link with nothing to press — and these are the messages
+ * every authentication callback falls back to, so they are the whole of the
+ * error handling a user ever sees.
+ */
 const NOTICES: Record<string, string> = {
   enlace_invalido:
     "Ese enlace ya no sirve — los enlaces caducan y solo se pueden usar una vez. Pide uno nuevo.",
+  // An expired link is not one problem but two, and they need different
+  // buttons: a stale CONFIRMATION link is replaced by signing in (which sends
+  // the person to the resend screen), while a stale RECOVERY link is replaced
+  // from "olvidaste tu contraseña". Naming both beats a generic "pide uno nuevo"
+  // next to a form that offers three different actions.
+  enlace_expirado:
+    "Ese enlace ya caducó. Entra con tu correo y contraseña y te enviamos uno nuevo — o usa " +
+    "«¿Olvidaste tu contraseña?» si el enlace era para cambiarla.",
+  // The PKCE case: a genuine, unexpired link opened somewhere other than where
+  // it was requested. Worth its own sentence, because "pide uno nuevo" would
+  // send them round the same loop.
+  enlace_otro_navegador:
+    "Ese enlace hay que abrirlo en el mismo navegador donde lo pediste. Ábrelo ahí, o pide uno " +
+    "nuevo desde este dispositivo.",
+  demasiados_intentos:
+    "Hiciste esto muchas veces seguidas. Espera unos minutos y vuelve a intentarlo.",
+  configuracion:
+    "El acceso para empresas no está disponible en este momento. Ya estamos avisados.",
   sesion_requerida: "Entra con tu cuenta de empresa para ver el directorio.",
+  sesion_expirada: "Tu sesión caducó por seguridad. Entra otra vez para seguir.",
   contrasena_lista: "Tu contraseña quedó lista. Ya puedes entrar con ella.",
+  correo_confirmado: "¡Listo! Confirmamos tu correo. Ya puedes entrar con tu contraseña.",
+  sesion_cerrada: "Cerraste tu sesión. Puedes entrar otra vez cuando quieras.",
 };
 
 export default async function EmployerAccessPage({
@@ -41,7 +69,14 @@ export default async function EmployerAccessPage({
   searchParams: Record<string, string | string[] | undefined>;
 }) {
   // Already in? Don't show a login form — that reads as "your session broke".
-  if (await resolveEmployerSession()) redirect("/empleadores");
+  const gate = await checkEmployerGate();
+  if (gate.status === "ok") redirect("/empleadores");
+  // Signed in but the address is unconfirmed. There is exactly one thing that
+  // person can do, and it has its own screen; showing them a login form they
+  // have already used would be a loop.
+  if (gate.status === "unverified") {
+    redirect(`/empleadores/verifica-tu-correo?correo=${encodeURIComponent(gate.email)}`);
+  }
 
   const state = searchParams.estado;
   const notice = typeof state === "string" ? NOTICES[state] : undefined;
@@ -58,7 +93,10 @@ export default async function EmployerAccessPage({
         </p>
       </header>
 
-      <EmployerAuthForms initialNotice={notice} />
+      <EmployerAuthForms
+        initialNotice={notice}
+        initialPanel={state === "recuperar" ? "reset" : undefined}
+      />
 
       {/*
         Said before the form, not in a policy page nobody opens: the people in

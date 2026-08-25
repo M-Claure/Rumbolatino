@@ -31,7 +31,7 @@ export function EmployerBar({ email }: { email: string }) {
             // Full navigation either way: the cookie changed server-side, so the
             // next render has to come from the server. On failure this lands on
             // the access page, which is the honest result of "not signed in".
-            window.location.assign("/empleadores/acceso");
+            window.location.assign("/empleadores/acceso?estado=sesion_cerrada");
           }
         }}
         className="font-medium text-accent-dark hover:underline disabled:opacity-60"

@@ -12,19 +12,33 @@ export const metadata: Metadata = {
 };
 
 /**
- * Reached only from `/empleadores/recuperar/confirmar`, which exchanges the
- * emailed code for a session first.
+ * The second half of a password recovery.
  *
- * The guard checks for a session but NOT for a confirmed email, which is the one
- * place in the employer flow that distinction matters: a reset is exactly how
- * someone who never clicked their original confirmation link recovers, and
- * `resolveEmployerSession` would turn them away for being unverified. Supabase
- * marks the address confirmed once the reset completes, so they leave here in the
- * same state as anyone else.
+ * ── The guard is a real session check, on the server ────────────────────────
+ * Reached from `/auth/confirm`, which exchanged the emailed `token_hash` for a
+ * session. So the question this page asks is the only one that means anything:
+ * does this request carry a session Supabase will accept? `getUser()` puts that
+ * to the auth server rather than trusting a parsed cookie, and no session means
+ * the link was expired, already used, or never valid — one message, because they
+ * are one situation to the person holding it.
+ *
+ * This is not the security boundary and does not need to be: `POST
+ * /api/employers/contrasena` re-checks the session server-side before changing
+ * anything. Hiding the form is a courtesy, not a control.
+ *
+ * The previous version checked for the presence of an httpOnly cookie holding
+ * our own reset token. That is gone with the token.
  */
 export default async function NewEmployerPasswordPage() {
-  const { data } = await getEmployerSupabaseClient().auth.getUser();
-  if (!data.user) redirect("/empleadores/acceso?estado=enlace_invalido");
+  let signedIn = false;
+  try {
+    const { data } = await getEmployerSupabaseClient().auth.getUser();
+    signedIn = Boolean(data.user);
+  } catch (error) {
+    console.error("[employers] could not read the recovery session:", error);
+  }
+
+  if (!signedIn) redirect("/empleadores/acceso?estado=enlace_invalido");
 
   return (
     <main className="mx-auto flex min-h-page max-w-md flex-col gap-6 px-6 py-10">

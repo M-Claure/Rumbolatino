@@ -343,6 +343,12 @@ export function requestEmployerPasswordReset(email: string): Promise<{ sent: boo
   return req("/api/employers/recuperar", { method: "POST", body: JSON.stringify({ email }) });
 }
 
+/**
+ * No token parameter, and none to forge: the authority is the SESSION Supabase
+ * issued when `/auth/confirm` exchanged the emailed recovery link. The route
+ * re-reads it server-side and calls `updateUser`, which can only ever change the
+ * caller's own password.
+ */
 export function setEmployerPassword(password: string): Promise<{ updated: boolean }> {
   return req("/api/employers/contrasena", { method: "POST", body: JSON.stringify({ password }) });
 }

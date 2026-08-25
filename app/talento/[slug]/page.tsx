@@ -63,6 +63,12 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
   const gate = await checkEmployerGate();
   if (gate.status === "misconfigured") return <DirectoryUnavailable />;
   if (gate.status === "anonymous") redirect("/empleadores/acceso?estado=sesion_requerida");
+  // Signed in but the address is unconfirmed. A distinct destination from
+  // "anonymous": telling someone to sign in when they already are is a loop.
+  // There is exactly one thing that person can do, and it has its own screen.
+  if (gate.status === "unverified") {
+    redirect(`/empleadores/verifica-tu-correo?correo=${encodeURIComponent(gate.email)}`);
+  }
   const employer = gate.session;
 
   const profile = await readPublicProfile(params.slug, employer).catch(() => null);

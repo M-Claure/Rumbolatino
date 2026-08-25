@@ -159,6 +159,10 @@ async function refreshEmployerSession(
 ): Promise<void> {
   const path = request.nextUrl.pathname;
   const isEmployerSurface =
+    // `/auth/*` is the confirmation and recovery callback pair. They build their
+    // own response-bound client and do not need this refresh, but a stale session
+    // arriving there should still be renewed rather than silently ignored.
+    path.startsWith("/auth") ||
     path.startsWith("/empleadores") ||
     path.startsWith("/talento") ||
     path.startsWith("/api/talent") ||

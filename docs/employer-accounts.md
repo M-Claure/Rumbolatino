@@ -1,14 +1,19 @@
 # Employer accounts
 
 The talent directory is gated. An employer registers with their name, company and
-email, clicks a link in that mailbox, and only then sees a candidate. This file is
-the operator runbook and the reasoning behind the shape.
+email, confirms that address, and only then sees a candidate. This file is the
+reasoning behind the shape.
+
+**For configuration — dashboard settings, SMTP, DNS, the testing checklist and
+rollback — see [`AUTH_PRODUCTION_SETUP.md`](../AUTH_PRODUCTION_SETUP.md).** For
+the email bodies, see [`auth-email-templates.md`](./auth-email-templates.md).
 
 ## What is gated
 
 | Surface | Before | Now |
 | --- | --- | --- |
 | `/empleadores/acceso` | did not exist | **public, indexable** — the front door |
+| `/empleadores/verifica-tu-correo` | did not exist | `noindex` — the check-your-email screen |
 | `/empleadores` | public, indexable | verified session, `noindex` |
 | `/talento/[slug]` | public, `noindex` | verified session, `noindex` |
 | `GET /api/talent/search` | public | 401 without a session |
@@ -19,90 +24,106 @@ crawled — a crawler has no account — and a login wall in a search index is w
 than useless, so `/empleadores/acceso` describes the service, lists nobody, and is
 the page Google sees. Individual profiles were already `noindex` and stay that way.
 
-## Required dashboard settings
+## Authentication is Supabase's, end to end
 
-Neither is code. The feature does not work without both.
+**Supabase Auth owns all of it**: the account, password hashing, sessions, refresh
+tokens, the confirmation email, the recovery email and the tokens inside them.
+This application issues no credential of its own. Delivery is **Resend, configured
+as Supabase Custom SMTP** — this codebase never calls Resend.
 
-1. **Authentication → Providers → Email → "Confirm email" ON.** With it off,
-   `signUp` returns a live session immediately and the verification gate is
-   bypassed entirely.
-2. **Custom SMTP** (Project Settings → Authentication → SMTP Settings). Supabase's
-   built-in sender is limited to a few messages an hour and is documented as
-   unsuitable for production; without your own SMTP most sign-ups never receive a
-   link and there is nothing in the app's logs to say so.
-3. **Password Requirements → "Lowercase, uppercase letters, digits and symbols"**
-   (Authentication → Providers → Email). This setting is the *authority*: the auth
-   API enforces it regardless of what our code does.
+### This reverses an earlier decision, and the reversal is deliberate
 
-### The password rule, and why it is written twice
+An earlier version of this document argued the opposite, and it was right at the
+time. Verification was moved **off** GoTrue because it could not be shipped on it:
 
-A password must be **at least 10 characters and contain an uppercase letter, a
-lowercase letter, a digit and a symbol.** Supabase enforces the four character
-classes; the 10-character minimum is ours (Supabase's default is 6, and six
-characters is inside brute-force range for an account that reaches other people's
-phone numbers).
+- the built-in sender is capped at a handful of messages an hour and only
+  delivers to addresses inside your Supabase organisation. Every other sign-up
+  produced a cheerful "revisa tu correo" and an empty inbox, **with no error
+  anywhere** — `signUp` returned success and the message was dropped downstream;
+- a PKCE confirmation link only worked in the browser that signed up, which is
+  the wrong browser for most of this audience: they register on a shop computer
+  and read mail on a phone.
 
-`lib/employers/policy.ts` mirrors the rule rather than deferring to the API,
-because the API rejects in **English** — a message this product's Spanish-speaking
-users cannot act on. Mirroring it lets `inspectPassword` name exactly which class
-is missing, in Spanish, and name all of them at once so one fix does not take four
-attempts. `PASSWORD_RULE_TEXT` is the single sentence both forms and the server's
-fallback message use, so they cannot word the same rule differently.
+Both are now answered:
 
-The symbol set is GoTrue's own list, reproduced character for character rather
-than approximated as "any non-alphanumeric": being more permissive would accept a
-symbol Supabase does not count and produce the English error we are avoiding,
-while being less permissive would refuse a password it would have taken.
+- **Resend as Custom SMTP** replaces the built-in sender entirely, along with its
+  caps and its silent drops.
+- **`token_hash` links to `/auth/confirm`** are verified server-side with
+  `verifyOtp`, carry no PKCE verifier, and work on any device.
 
-**Keep the two in step.** A looser dashboard setting means we reject passwords
-Supabase would accept; a stricter one means users hit an untranslated error. If
-you change the dashboard, change `CHARACTER_CLASSES` and `MIN_PASSWORD_LENGTH`
-with it — `tests/unit/employer-policy.test.ts` pins the current rule.
+Neither was true when the custom tokens were written. What the switch buys is not
+just less code: reset-token generation, single-use enforcement, expiry and replay
+protection stop being ours to get right, and the password change no longer needs
+`auth.admin.updateUserById` — an API that will change *any* user's password and
+was previously guarded only by our own token check running first.
 
-Also add the deployment's URL under **Authentication → URL Configuration →
-Redirect URLs**. Otherwise the emailed link redirects to the project's Site URL
-and the employer lands somewhere unrelated.
+**Consequence: Supabase's "Confirm email" must be ON.** That is the reverse of
+what migration `0013` required. With it on, `signUp` returns no session and
+`signInWithPassword` refuses an unconfirmed address, so the confirmation is
+enforced by GoTrue rather than only by our gate.
 
-### Recommended: switch the email template to a token hash
+### The retired token machinery is still here
 
-By default Supabase's confirmation email uses `{{ .ConfirmationURL }}`, which
-comes back to us as `?code=…` — a PKCE exchange that requires the code-verifier
-cookie set during sign-up. That cookie only exists in the browser that signed up,
-so **clicking the link on a different device fails**, which is the common case:
-people sign up on a laptop and read mail on a phone.
-
-Editing the template (Authentication → Email Templates → Confirm signup) to point
-at
-
-```
-{{ .SiteURL }}/empleadores/verificar?token_hash={{ .TokenHash }}&type=signup
-```
-
-makes the link verifier-free and device-independent. `exchangeEmployerAuthCode`
-accepts both shapes, so this is an improvement you can make at any time without a
-deploy. Do the same for the recovery template, pointing at
-`/empleadores/recuperar/confirmar` with `type=recovery`.
+`lib/employers/tokens.ts`, `employer_email_tokens` and
+`mcv_consume_employer_token` are unused and deliberately retained. They are the
+**rollback**: reverting the switch restores a working flow with no database
+migration and no data loss. Delete all three together, once native delivery has
+been observed in production.
 
 ## How the pieces fit
 
 ```
-/empleadores/acceso                 the only public page; sign in / register / reset
-   │  POST /api/employers/registro  → Supabase signUp, company+name into user metadata
+/empleadores/acceso                     the only public page
+   │  POST /api/employers/registro      signUp(emailRedirectTo, metadata)
+   │                                      → employers row (service role)
+   │                                      → Supabase sends the confirmation
    ▼
-(email)  →  /empleadores/verificar            exchanges the link for a session,
-                                              then resolveEmployerSession() writes
-                                              the `employers` row
+/empleadores/verifica-tu-correo         "revisa tu correo", 60 s resend cooldown
+   │                                      POST /api/employers/reenviar → auth.resend()
    ▼
-/empleadores, /talento/[slug]        gated pages
-/api/talent/*                        gated JSON + PDF
+(email) → /auth/confirm?token_hash=…&type=signup
+   │        verifyOtp → session on THIS response → mirror employers.email_verified_at
+   ▼                    (works in any browser, on any device)
+/empleadores, /talento/[slug]           gated
+/api/talent/*                           gated JSON + PDF
+
+reset:  POST /api/employers/recuperar   → auth.resetPasswordForEmail()
+        → /auth/confirm?token_hash=…&type=recovery
+        → /empleadores/nueva-contrasena  requires the recovery session
+        → POST /api/employers/contrasena → auth.updateUser({ password })
 ```
 
-- `lib/employers/policy.ts` — pure rules: which addresses and passwords are
-  acceptable. Unit-tested, no I/O.
-- `lib/employers/session.ts` — the gate. `resolveEmployerSession()` is the one
-  function that decides whether somebody may see a candidate.
-- `lib/services/employer-account.ts` — sign-up, sign-in, resend, reset.
-- `lib/repositories/employer-store.ts` — the `employers` row, service-role only.
+- `lib/employers/policy.ts` — pure rules for addresses and passwords.
+- `lib/employers/session.ts` — the gate, and the two client factories.
+- `lib/employers/auth-callback.ts` — what both callbacks share.
+- `lib/auth-redirect.ts` — the open-redirect guard. Pure, allow-listed, tested.
+- `lib/services/employer-account.ts` — the flows, and GoTrue error translation.
+- `lib/repositories/employer-store.ts` — `employers`, service-role only.
+- `lib/employers/tokens.ts`, `lib/mail/` — **retired**; see above.
+
+`/empleadores/verificar` and `/empleadores/recuperar/confirmar` survive as
+forwarding shims, so links already sitting in mailboxes land somewhere sensible.
+
+## Troubleshooting
+
+The full table is in
+[`AUTH_PRODUCTION_SETUP.md` § J](../AUTH_PRODUCTION_SETUP.md#j-rollback-and-troubleshooting).
+The three that come up most:
+
+**No email arrives.** Custom SMTP is not configured, so Supabase's built-in sender
+is still in use and only delivers inside your Supabase organisation. Check Resend
+→ Logs: no entry at all means Supabase never handed the message over.
+
+**The link works in one browser but not another.** The stock
+`{{ .ConfirmationURL }}` template is still in place, which is the PKCE flow. Paste
+the `token_hash` templates.
+
+**A verified employer is bounced back to the sign-in page.**
+`SUPABASE_SERVICE_ROLE_KEY` is not set. `employers` has RLS on with no policies,
+so only the service role can reach it. The gate returns `misconfigured` and the
+page renders `DirectoryUnavailable` ("es un problema de nuestro lado") rather than
+a login prompt; the specifics are in the log. API routes answer 503, not 401. On
+Vercel, Preview and Production have separate environment variables.
 
 ## Decisions worth not re-litigating
 
@@ -118,130 +139,145 @@ one person build a résumé in one tab and hire in another.
 "must contain a symbol" requirements on the evidence that they push people toward
 `Empresa1!` and a sticky note, where a long passphrase would be stronger. Matching
 Supabase's strictest setting was chosen anyway — a deliberate decision, the same
-way five Rumbo Latino colour pairs sit below WCAG AA on purpose. Do not "fix" it
-back to length-only without also changing the dashboard.
+way five Rumbo Latino colour pairs sit below WCAG AA on purpose. The dashboard is
+the authority; `lib/employers/policy.ts` mirrors it so the rejection arrives in
+Spanish naming every missing class at once, instead of in English. Change both
+together.
 
 **Free webmail is accepted; disposable inboxes are not.** The employers this
 directory exists for are small local businesses, many with no domain at all.
 Requiring a company domain would gate out the demand side of the marketplace to
-buy a signal the verification link already provides. Throwaway domains are
-refused because a mailbox someone held for ten minutes is not an accountable
-party, and it makes `contact_reveals` worthless as a record. The blocklist is a
-speed bump, not a wall — new throwaway domains appear daily.
+buy a signal the confirmation link already provides. Throwaway domains are refused
+because a mailbox someone held for ten minutes is not an accountable party, and it
+makes `contact_reveals` worthless as a record. The blocklist is a speed bump, not
+a wall — new throwaway domains appear daily. `guest.invalid` is on it so a job
+seeker's provisioned guest identity can never become an employer.
 
-**The `employers` row is written at the GATE, not at sign-up.** This is the
-security-relevant one. With email confirmation on, `signUp` for an address that
-already has an account deliberately does not say so — it returns a user-shaped
-object with no identities, so the endpoint cannot be used to enumerate accounts.
-That means a sign-up response cannot be trusted to describe a new user, and
-writing our row from it would let an attacker register `ana@empresa.com` a second
-time and overwrite the real Ana's company name. So sign-up stores the company and
-contact name in the auth user's metadata and writes nothing; `ensureEmployerProfile`
-creates the row from an authenticated session on the first gated request.
+**Registration answers identically whether or not the address is taken.**
+"Ya existe una cuenta con ese correo" on the form lets anyone test addresses
+against this directory's customer list. With confirmation on, Supabase declines to
+say so too: it returns a user-shaped object with a randomised id and an **empty
+`identities` array**. `isExistingAccount` reads exactly that, and the response is
+the same either way.
 
-That also makes the gate self-repairing: an account whose row write once failed,
-or one created directly in the dashboard, heals on its next page view instead of
-being permanently locked out.
+Detecting it is not only about disclosure — the `employers` row must not be
+written from that object. The id is not a real `auth.users` row, so the write
+would either fail the foreign key or, if Supabase ever returned the genuine id,
+overwrite a stranger's company name with whatever this caller typed.
 
-**The gate guarantees the row because a foreign key depends on it.**
-`contact_reveals.employer_id` references `employers(id)`. A verified session with
-no row would fail the audited reveal, so every downstream caller can pass
-`employer.userId` to `revealContact` and know it holds.
+An earlier version emailed the existing account holder a "you already have an
+account" message. That is gone with our mail transport. Someone who forgot they
+had registered finds their way back through "¿Olvidaste tu contraseña?", which
+exists for exactly that and discloses nothing either.
+
+**Sign-in reports `unverified` without leaking anything.** GoTrue verifies the
+**password before** it checks confirmation state, so `email_not_confirmed` only
+ever reaches someone who already supplied the correct password for that address.
+They have proved more than the account's existence. Every other credential
+failure — no such user, wrong password — is one generic sentence.
+
+**The gate reads `auth.users.email_confirmed_at`, not our column.** That is the
+reverse of the previous design, and it follows from the reversal above: GoTrue
+sets that column, only a real confirmation sets it, and no code here can forge it.
+`employers.email_verified_at` is kept as a **mirror** — it is what operators
+query and what the reveal audit reads alongside — and the gate repairs it when it
+has fallen behind, but never depends on that write succeeding. An employer who has
+proved their mailbox must not be locked out by a failed bookkeeping update.
+
+**The gate has FOUR outcomes: `ok`, `anonymous`, `unverified`, `misconfigured`.**
+Collapsing the last two cost real debugging time once — a deployment with no
+service-role key told verified employers to "entra con tu cuenta de empresa",
+advice they could not act on, while the actual fault sat in an unread log. Each
+one has a different fix, so each gets its own message, the same way
+`Errors.rateLimited` and `Errors.budgetExhausted` are separate codes.
+
+`unverified` is now nearly unreachable — GoTrue issues no session before
+confirmation — and it is kept precisely for the cases where it is not: a session
+minted while the setting was off, an account whose address was changed, or the
+setting being turned off by mistake. Defence in depth, not dead code.
 
 **The session is a function PARAMETER, not a lookup.** `searchDirectory`,
 `searchDirectorySafely` and `readPublicProfile` all take an `EmployerSession`.
-Only `resolveEmployerSession` can produce one, so the gate is enforced by the type
-checker rather than by remembering to call it — adding a new caller that skips the
-check is a compile error, not a review catch.
+Only the gate can produce one, so a new caller that skips the check is a compile
+error rather than something review has to catch.
 
-**Sign-in distinguishes exactly one failure.** "Correct password, mailbox never
-confirmed" is reported as `status: "unverified"` with a resend button, because
-answering it with "wrong password" leaves someone with working credentials locked
-out and no idea why. Every other failure is one generic message: saying "no
-account with that address" would turn the login form into an account-existence
-oracle. The resend and reset routes always answer 200 for the same reason.
+**`getUser()`, never `getSession()`.** It revalidates the token against the auth
+server, so a revoked or tampered session is refused rather than trusted because a
+cookie parsed cleanly. This is what makes "sign out user" in the Supabase
+dashboard actually end a session.
+
+**Callbacks write cookies onto the response they return.**
+`employerClientForRoute` binds the Supabase cookie sink to the redirect being
+constructed. Writing through `next/headers` instead relies on Next.js merging
+those mutations into a handler-built response, and when that does not happen the
+failure is the worst possible shape: the exchange succeeds, Supabase marks the
+address confirmed, and the browser receives no session — so the employer clicks
+the link, lands on the directory, is bounced to the login page, and nothing says
+why. This was got wrong twice before it was written down.
+
+**`?next=` is allow-listed, not merely required to be relative.** The callbacks
+take a destination from the URL and act on it immediately *after* minting a
+session, and that value arrives from an email template edited in a dashboard,
+outside code review. `safeNextPath` rejects absolute URLs, scheme-relative
+`//host`, the `/\host` variants browsers normalise back into them, traversal, and
+control characters — then checks the normalised path against a short list of
+employer paths. "Same-origin" would not be enough: it still covers `/api/…`,
+where a redirect performs an action.
+
+**Verification creates a session; the link is the proof.** This changed with the
+switch, and it is worth being explicit. The old flow deliberately did *not* sign
+anyone in from a link, on the grounds that forwarding the email would then be
+equivalent to handing over the account. Supabase's `verifyOtp` mints a session,
+and that is the standard behaviour of every confirmation link on the web: the
+recipient of the mailbox is the account holder. Forwarding a confirmation email is
+now equivalent to forwarding a password reset — which was already true of the
+reset link in the old design.
+
+**Sign-out is `scope: "local"`.** It clears this browser's session only. `global`
+would revoke every refresh token for the account, so pressing "Salir" on a shared
+office machine would sign the person out of their phone as well.
 
 **Rate limits.** `employer_email` (6/hour) is the tightest limit in the product,
-because each hit sends mail from our domain to an address the caller typed —
-loose limits there are a way to mail-bomb a third party and to burn the sending
-reputation the whole flow depends on. `employer_login` is 20/hour, keyed by IP
-because a failed login has no session to attribute. `directory_search` and
-`contact_reveal` are now keyed by the **account**, so changing networks no longer
-resets them and a shared office address no longer shares a quota.
+because each hit causes mail to be sent from our domain to an address the caller
+typed — loose limits there are a way to mail-bomb a third party and to burn the
+sending reputation the whole flow depends on. `employer_login` is 20/hour and
+`employer_register` 10/hour, both keyed by IP because those routes run before
+there is a session to attribute. Supabase enforces its own send limits underneath,
+which is a backstop and not a substitute. `directory_search` and `contact_reveal`
+are keyed by the **account**, so changing networks no longer resets them.
 
-## Troubleshooting
-
-Every failure below has been hit for real. All three are configuration, not code.
-
-### Sign-up succeeds but no email ever arrives
-
-**Cause: Supabase's built-in email sender.** It is rate-limited to a handful of
-messages per hour, and on current projects it will only deliver to addresses
-belonging to members of your Supabase organization — so testing with any other
-address produces exactly this: a cheerful "revisa tu correo" and nothing in the
-inbox or the spam folder. Nothing appears in the app's logs either, because
-`signUp` returned no error; the message was accepted and then dropped.
-
-**Fix:** configure custom SMTP under **Project Settings → Authentication → SMTP
-Settings**. Any transactional provider works — Resend, Postmark, SendGrid, Brevo,
-AWS SES — and most have a free tier sufficient for this. You will also need to
-verify a sending domain with whichever you pick.
-
-**To keep testing before SMTP is ready:** confirm the account by hand in
-**Authentication → Users** → the user → *Confirm email*. That sets
-`email_confirmed_at`, which is exactly what the gate reads, so the rest of the
-flow — sign-in, the directory, CV downloads, the reveal log — can all be
-exercised without a single email being sent. Do NOT reach for turning "Confirm
-email" off instead: that disables the entire verification gate for everyone.
-
-### A verified employer is bounced back to the sign-in page
-
-**Cause: `SUPABASE_SERVICE_ROLE_KEY` is not set** in the environment you are
-running. `employers` has RLS on with no policies, so only the service role can
-read or write it; without the key `getEmployerStore()` throws, the gate fails
-closed, and the person is turned away *after* successfully verifying.
-
-This used to be invisible — the gate reported it as "not signed in", which is
-advice a verified employer cannot act on, and the real fault sat in a log nobody
-was reading. The gate now returns `misconfigured` for this case and the page
-renders `DirectoryUnavailable` ("es un problema de nuestro lado") instead of a
-login prompt, with the specifics in the server log. API routes answer 503 rather
-than 401 for the same reason.
-
-On Vercel, note that Preview and Production have separate environment variables.
-
-### "Ese enlace ya no sirve" after clicking the email link
-
-Two causes, in order of likelihood:
-
-1. **The redirect URL is not allow-listed.** Add the deployment's URL under
-   **Authentication → URL Configuration → Redirect URLs**. Without it Supabase
-   sends the browser to the project's Site URL and our route never sees a code.
-2. **The link was opened on a different device than the one that signed up.** The
-   default `?code=` form is a PKCE exchange that needs the code-verifier cookie,
-   which only exists in the signing-up browser. This is the common case in
-   practice — sign up on a laptop, read mail on a phone. Fix it permanently with
-   the `{{ .TokenHash }}` template change described above; both shapes are already
-   handled in code.
-
-If neither applies, the exchange failure is logged with Supabase's own reason —
-grep the server log for `[employers]`.
-
-### Anything else
-
-Every failure path in the employer flow logs with an `[employers]` prefix,
-including cookie-write failures, which are no longer swallowed. Check the server
-log before reading code — the two bugs found so far were both silent in the UI and
-explicit in the log.
+The 60-second cooldown on the resend button is **UX, not a control** — it stops
+someone pressing it four times while the first message is in flight and then being
+locked out of the flow they are trying to complete. Anything that pretends to be
+security in a client component is not.
 
 ## Still missing
 
+- **CAPTCHA is not configured, and enabling it in the dashboard alone will break
+  sign-up.** With Supabase Attack Protection on, GoTrue requires a `captchaToken`
+  on every `signUp`, `signInWithPassword`, `resend` and `resetPasswordForEmail`,
+  and this app sends none. It is a code change as well as a setting — see
+  `AUTH_PRODUCTION_SETUP.md` § H.
 - **No admin view of accounts.** `employers` and `contact_reveals` are readable
   only with the service role, i.e. through the Supabase dashboard. There is no
   moderation UI, no way to disable an account in-product, and no way to answer a
   job seeker's "who has my details?" without running SQL.
 - **No email change flow.** An employer who mistypes their address must register
-  again with the correct one; the wrong one stays as an unverified account.
-- **`ONLINE_ONLY` still breaks e2e.** These flows need real Supabase Auth, so they
-  cannot be exercised in the mock/memory e2e mode at all — the unit tests cover
-  the pure policy only.
+  again; the wrong one stays as an unconfirmed account. Note the loose end before
+  building it: nothing mirrors a changed address onto `employers.email`, so the
+  reveal audit would name an address the person no longer uses.
+- **No bounce or complaint handling.** Resend records them, but nothing here
+  reads that back — an address that permanently rejects mail keeps being retried,
+  which quietly damages the sending reputation the whole flow depends on.
+- **No unsubscribe or preference handling**, which is correct for purely
+  transactional mail and becomes required the moment any of these messages turns
+  into marketing. Do not add a newsletter to this sender.
+- **One SMTP sender identity for two brands.** Supabase has one per project, so
+  an employer arriving from an Aprende host receives a confirmation signed "Rumbo
+  Latino". Decide before the Aprende domain goes live — accept it, use neutral
+  copy, or run a second project.
+- **Sign-in still can't be exercised in e2e.** The mock/memory e2e mode has no
+  Supabase Auth, so the covered surface is the unit tests: the policy rules, the
+  redirect guard, the Supabase seams, and the retired token lifecycle against
+  `MemoryEmployerStore`. The rest is the manual checklist in
+  `AUTH_PRODUCTION_SETUP.md` § I, which needs a real project and a real mailbox.

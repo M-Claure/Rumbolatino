@@ -230,6 +230,8 @@ describe("env validation", () => {
     process.env.PERSISTENCE = "supabase";
     process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon";
+    // The sending address is still config even though no transport is wired up.
+    process.env.MAIL_FROM_ADDRESS = "no-reply@example.com";
     delete process.env.DEFAULT_BRAND;
     delete process.env.BRAND_HOST_OVERRIDES;
   }

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { getBrandConfig } from "@/lib/brand/registry";
 import { getActiveBrandId } from "@/lib/brand/server";
 import { originForZip, searchDirectorySafely } from "@/lib/services/talent-directory";
@@ -11,6 +11,7 @@ import { TalentFilters } from "@/components/talent/TalentFilters";
 import { EmployerBar } from "@/components/employers/EmployerBar";
 import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailable";
 import { checkEmployerGate } from "@/lib/employers/session";
+import { EMPLOYER_COOKIE_NAME } from "@/lib/employers/constants";
 import type { TalentSearchFilters } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -60,7 +61,27 @@ export default async function EmpleadoresPage({
   // `misconfigured` must NOT redirect there — see `DirectoryUnavailable`.
   const gate = await checkEmployerGate();
   if (gate.status === "misconfigured") return <DirectoryUnavailable />;
-  if (gate.status === "anonymous") redirect("/empleadores/acceso?estado=sesion_requerida");
+  if (gate.status === "anonymous") {
+    // "Never signed in" and "signed in, and it lapsed" are the same refusal but
+    // not the same message. A returning employer whose session simply aged out
+    // reads "entra con tu cuenta" as though their account were gone; saying the
+    // session expired tells them nothing is wrong and they only have to type a
+    // password. The cookie's presence is the tell, and it is only a hint — an
+    // expired or revoked session leaves the cookie behind, which is exactly the
+    // case being named.
+    const lapsed = cookies()
+      .getAll()
+      .some((cookie) => cookie.name.startsWith(EMPLOYER_COOKIE_NAME));
+    redirect(
+      `/empleadores/acceso?estado=${lapsed ? "sesion_expirada" : "sesion_requerida"}`,
+    );
+  }
+  // Signed in but the mailbox is unproven. A distinct destination from
+  // "anonymous": telling someone to sign in when they already are is a loop, and
+  // the access page can offer to send the link again instead.
+  if (gate.status === "unverified") {
+    redirect(`/empleadores/verifica-tu-correo?correo=${encodeURIComponent(gate.email)}`);
+  }
   const employer = gate.session;
 
   // Anything not on the schema is dropped rather than passed through; a bad

@@ -140,94 +140,61 @@ export interface EmployerSession {
 }
 
 /**
- * Create the `employers` row for a verified session that has none.
+ * Why a request may not see the directory. FOUR outcomes, not two.
  *
- * ── Why the row is written HERE and not at sign-up ──────────────────────────
- * With email confirmation on, `signUp` for an address that already has an
- * account deliberately does not say so — it answers with a user-shaped object
- * and no identities, so the endpoint cannot be used to enumerate accounts. That
- * means a sign-up response cannot be trusted to describe a NEW user, and writing
- * our row from it would let someone register `ana@empresa.com` a second time and
- * overwrite the real Ana's company name: an unauthenticated write to another
- * account's row.
+ * ── Why each one is separate ────────────────────────────────────────────────
+ * Because the fix differs, which is the same reason `Errors.rateLimited` and
+ * `Errors.budgetExhausted` are separate codes: one is waiting, the other is an
+ * operator changing a setting.
  *
- * So sign-up puts the company and contact name on the auth user's metadata and
- * writes nothing. This function reads them back from an AUTHENTICATED session,
- * so the row is always created by the person who proved they hold the mailbox.
- *
- * It is also a repair path. It runs on every gated request, which means an
- * account whose row write once failed — or one created straight in the Supabase
- * dashboard — heals on its next page view instead of being permanently unable to
- * reach the directory.
- */
-export async function ensureEmployerProfile(
-  userId: string,
-  email: string,
-  metadata: Record<string, unknown>,
-): Promise<{ company: string; contactName: string }> {
-  const store = getEmployerStore();
-  const existing = await store.get(userId);
-  if (existing) return { company: existing.company, contactName: existing.contactName };
-
-  const company = typeof metadata.company === "string" ? metadata.company.trim() : "";
-  const contactName = typeof metadata.contact_name === "string" ? metadata.contact_name.trim() : "";
-  // Both columns are NOT NULL, and a session that reaches this point is
-  // legitimately signed in — so fall back to something usable rather than
-  // failing the insert and locking the person out of an account they verified.
-  const profile = {
-    company: company || "Sin especificar",
-    contactName: contactName || email,
-  };
-
-  await store.save({ id: userId, email, ...profile, ip: null });
-  return profile;
-}
-
-/**
- * Why a request may not see the directory. THREE outcomes, not two.
- *
- * ── Why "misconfigured" is not folded into "anonymous" ──────────────────────
- * Because the fix is different, which is the same reason `Errors.rateLimited`
- * and `Errors.budgetExhausted` are separate codes: one is waiting, the other is
- * an operator changing a setting.
- *
- * Collapsing them cost real debugging time once already. A deployment with no
- * `SUPABASE_SERVICE_ROLE_KEY` turned every verified employer away with "entra
- * con tu cuenta de empresa" — advice that cannot work, addressed to someone who
- * had just clicked a verification link, while the actual fault sat in a log
- * nobody was reading. A gate that cannot tell "you are not signed in" from "this
- * environment is not set up" will send the operator hunting through auth code
- * for a missing environment variable.
+ *   anonymous     no session. Sign in. The person can fix it.
+ *   unverified    signed in, mailbox unproven. Click the link, or resend it.
+ *                 With Supabase's "Confirm email" ON this is nearly unreachable
+ *                 — GoTrue issues no session before confirmation — and it is
+ *                 kept precisely for the cases where it is not: a session minted
+ *                 while that setting was off, an account confirmed and then
+ *                 changed to a new address, or the setting being turned off by
+ *                 mistake. Defence in depth, not dead code.
+ *   misconfigured Supabase or the service role is missing. Only an operator can
+ *                 fix it, and it must never be reported as a login problem —
+ *                 collapsing it into `anonymous` once cost real debugging time,
+ *                 telling verified employers to "entra con tu cuenta" while the
+ *                 actual fault sat in an unread log.
  */
 export type EmployerGate =
   | { readonly status: "ok"; readonly session: EmployerSession }
-  /** No session, or one whose mailbox is unconfirmed. The person can fix this. */
   | { readonly status: "anonymous" }
-  /** Supabase or the service role is missing. Only an operator can fix this. */
+  | { readonly status: "unverified"; readonly email: string }
   | { readonly status: "misconfigured" };
 
 /**
  * The gate. Every surface that shows a candidate goes through here.
  *
- * Never throws. All three conditions are required for `ok`:
+ * Never throws. `ok` requires all three of:
  *
  *  1. a session on the employer cookie;
- *  2. `email_confirmed_at` set on that user — the verification gate, read from
- *     the auth user rather than mirrored into `employers`, so there is one
- *     source of truth and no copy that can drift into claiming "verified" when
- *     Supabase disagrees;
- *  3. a row in `employers`, created here if it is missing.
+ *  2. a row in `employers` — the account was registered through this product,
+ *     not merely created in Supabase Auth;
+ *  3. `employers.email_verified_at` set.
  *
- * (3) is not ceremony. `contact_reveals.employer_id` is a foreign key to
- * `employers`, so a session without a row would fail the audited reveal and the
- * employer could not download anything — the FK would turn a bookkeeping gap
- * into a broken product. Guaranteeing the row at the gate means every downstream
- * caller can pass `employer.userId` to `revealContact` and know it holds.
+ * (3) reads `auth.users.email_confirmed_at`, through the session user — the
+ * REVERSE of what this comment said while verification was ours. That column is
+ * now the authority: GoTrue sets it, only a real confirmation sets it, and no
+ * code in this repo can forge it. `employers.email_verified_at` is kept as a
+ * MIRROR for operators and the reveal audit, and is repaired here when it has
+ * fallen behind, but the gate must not depend on a write of ours succeeding —
+ * an employer who has proved their mailbox would otherwise be locked out by a
+ * failed bookkeeping update.
+ *
+ * (2) is also what makes the reveal audit safe: `contact_reveals.employer_id` is
+ * a foreign key to `employers`, so guaranteeing the row here means every
+ * downstream caller can pass `employer.userId` to `revealContact` and know it
+ * holds. Note the gate no longer CREATES that row — registration does, which is
+ * why a session with no row is now a refusal rather than a repair.
  *
  * Fails CLOSED, unlike the rate limiter: `getEmployerStore()` throws when the
  * service role is missing, and the safe reading of "I cannot confirm this is a
- * registered employer" is to show nobody's phone number. But it now fails closed
- * *legibly* — as `misconfigured`, not as `anonymous`.
+ * registered employer" is to show nobody's phone number.
  */
 export async function checkEmployerGate(): Promise<EmployerGate> {
   const env = getEnv();
@@ -241,38 +208,65 @@ export async function checkEmployerGate(): Promise<EmployerGate> {
     return { status: "misconfigured" };
   }
 
+  // `getUser()` and not `getSession()`: it revalidates the token against the
+  // auth server, so a revoked or tampered session is rejected here rather than
+  // trusted because a cookie parsed cleanly.
   const { data } = await supabase.auth.getUser();
   const user = data.user;
   if (!user?.email) return { status: "anonymous" };
-  // An unverified account is not a session as far as every gate is concerned.
-  if (!user.email_confirmed_at) return { status: "anonymous" };
 
+  // The authority, checked before anything of ours is consulted.
+  if (!user.email_confirmed_at) return { status: "unverified", email: user.email };
+
+  let profile;
   try {
-    const profile = await ensureEmployerProfile(
-      user.id,
-      user.email,
-      (user.user_metadata ?? {}) as Record<string, unknown>,
-    );
-    return { status: "ok", session: { userId: user.id, email: user.email, ...profile } };
+    profile = await getEmployerStore().get(user.id);
   } catch (error) {
-    // Reached with a VALID, verified session — so this is never the person's
-    // fault and must not be reported to them as a login problem.
     console.error(
-      "[employers] a verified employer was turned away because the `employers` table " +
-        "could not be reached. This is almost always a missing SUPABASE_SERVICE_ROLE_KEY:",
+      "[employers] the `employers` table could not be reached, so a session could not be " +
+        "checked. This is almost always a missing SUPABASE_SERVICE_ROLE_KEY:",
       error,
     );
     return { status: "misconfigured" };
   }
+
+  // A session with no row is not a registered employer. Treated as anonymous
+  // rather than repaired: the row is created during registration and rebuilt by
+  // `/auth/confirm`, so its absence here means this account never went through
+  // either — an account made straight in the Supabase dashboard, or one whose
+  // employer row was deleted. The gate must not be the third way in.
+  if (!profile) return { status: "anonymous" };
+
+  // Bring the mirror forward once, and only once — the update filters on
+  // `email_verified_at is null`, so a confirmed employer costs no extra write on
+  // subsequent requests. Failure is logged and ignored: the gate has already
+  // decided on Supabase's answer, and bookkeeping must not deny access.
+  if (!profile.emailVerifiedAt) {
+    void getEmployerStore()
+      .markEmailVerified(user.id)
+      .catch((error) =>
+        console.error("[employers] could not mirror the confirmation onto employers:", error),
+      );
+  }
+
+  return {
+    status: "ok",
+    session: {
+      userId: user.id,
+      email: profile.email,
+      contactName: profile.contactName,
+      company: profile.company,
+    },
+  };
 }
 
 /**
  * The gate, flattened to "who is this, if anyone".
  *
- * For callers that treat both failure modes the same way — chiefly
- * `/empleadores/acceso`, which only needs to know whether to skip its own form.
- * Anything that renders a candidate should use `checkEmployerGate` instead, so a
- * configuration fault does not masquerade as a login prompt.
+ * For callers that treat every failure the same way. Anything that renders a
+ * candidate should use `checkEmployerGate`, so a configuration fault does not
+ * masquerade as a login prompt and an unverified employer is told which of the
+ * two things they need to do.
  */
 export async function resolveEmployerSession(): Promise<EmployerSession | null> {
   const gate = await checkEmployerGate();
@@ -280,19 +274,19 @@ export async function resolveEmployerSession(): Promise<EmployerSession | null> 
 }
 
 /**
- * The session as a REQUIREMENT: throws `unauthorized` when there isn't one.
+ * The session as a REQUIREMENT, for API routes and the directory service.
  *
- * This is what gated API routes and the directory service call. The service and
- * not only the route, for the same reason `searchDirectory` carries its own rate
- * limit: `/empleadores` reads the directory directly rather than calling its own
- * API, and the page must not be a way around the guard the API has.
+ * In the service and not only the route, for the same reason `searchDirectory`
+ * carries its own rate limit: `/empleadores` reads the directory directly rather
+ * than calling its own API, and the page must not be a way around the guard the
+ * API has.
  */
 export async function requireEmployerSession(): Promise<EmployerSession> {
   const gate = await checkEmployerGate();
   if (gate.status === "ok") return gate.session;
 
-  // A 503 and not a 401. Telling a caller to authenticate when the server cannot
-  // check anyone's credentials sends them in a circle, and it hides an outage
+  // A 503, not a 401. Telling a caller to authenticate when the server cannot
+  // check anyone's credentials sends them in a circle, and hides an outage
   // behind a message that reads like their mistake.
   if (gate.status === "misconfigured") {
     throw Errors.serviceUnavailable(
@@ -300,28 +294,11 @@ export async function requireEmployerSession(): Promise<EmployerSession> {
     );
   }
 
-  throw Errors.unauthorized(
-    "Entra con tu cuenta de empresa para ver el directorio. Si ya te registraste, " +
-      "confirma tu correo primero.",
-  );
-}
-
-/**
- * True when a session exists but the mailbox has not been confirmed.
- *
- * The sign-in flow needs to tell these apart: "wrong password" and "you never
- * clicked the link" have completely different fixes, and answering both with
- * "no autorizado" leaves someone with a working password locked out and no idea
- * why. This deliberately re-reads the user, ignoring the confirmation gate that
- * `resolveEmployerSession` applies.
- */
-export async function isAwaitingVerification(): Promise<boolean> {
-  const env = getEnv();
-  if (env.PERSISTENCE !== "supabase") return false;
-  try {
-    const { data } = await getEmployerSupabaseClient().auth.getUser();
-    return Boolean(data.user?.email) && !data.user?.email_confirmed_at;
-  } catch {
-    return false;
+  if (gate.status === "unverified") {
+    throw Errors.forbidden(
+      "Confirma tu correo para ver el directorio. Te enviamos un enlace cuando te registraste.",
+    );
   }
+
+  throw Errors.unauthorized("Entra con tu cuenta de empresa para ver el directorio.");
 }

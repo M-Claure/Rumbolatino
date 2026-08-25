@@ -20,3 +20,12 @@
  * matching cookies must match this as a PREFIX, never for equality.
  */
 export const EMPLOYER_COOKIE_NAME = "mcv-empleador-auth";
+
+/*
+ * There was a second cookie here — `mcv-empleador-reset` — which carried a
+ * password-reset token of ours from the emailed link to the form that used it.
+ * It is gone with the token: Supabase issues the recovery credential now,
+ * `/auth/confirm` exchanges it for a real session, and the session is what
+ * authorizes the password change. A cookie that holds a bearer credential is
+ * worth removing rather than keeping unused.
+ */

@@ -53,11 +53,17 @@ const EnvSchema = z
     /**
      * Public base URL of this deployment, e.g. `https://rumbolatino.com`.
      *
-     * Only used to build the links in employer verification and password-reset
-     * emails, which have to be absolute and have to point at the host the
-     * employer is actually using. Optional because it is normally derivable from
-     * the request headers (`x-forwarded-host`); set it when a proxy rewrites
-     * those, or when a preview deployment must send links to the real domain.
+     * Used to build the redirect this app hands to Supabase Auth
+     * (`emailRedirectTo` / `redirectTo`), which is where the STOCK email
+     * templates come back to. Optional because it is normally derivable from the
+     * request headers (`x-forwarded-host`), which is what lets preview
+     * deployments and both brand domains each send links back to themselves; set
+     * it when a proxy rewrites those, or when a preview must send links to the
+     * real domain.
+     *
+     * The recommended `token_hash` templates build their link from Supabase's
+     * OWN Site URL instead and never see this value — see
+     * `docs/auth-email-templates.md`.
      *
      * Whatever it resolves to must ALSO be on Supabase's redirect allow-list
      * (Authentication → URL Configuration), or the link in the email lands on
@@ -69,6 +75,38 @@ const EnvSchema = z
     NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional(),
     NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+
+    /**
+     * The BARE sending address — `no-reply@auth.rumbolatino.com`, no display name.
+     *
+     * ── NOT the authentication sender ───────────────────────────────────────
+     * Confirmation and password-recovery mail is composed and sent by Supabase,
+     * which delivers it through Resend as Custom SMTP; that From address is
+     * configured in the Supabase dashboard, not here. Keep the two in step
+     * anyway — an employer who gets a confirmation from one address and a
+     * manage link from another has two identities to trust instead of one.
+     *
+     * What this still configures is the seam for the one message this product
+     * may send itself: the talent directory's manage link, which goes to a job
+     * seeker with no account and which Supabase will never send. No transport
+     * implements it today (`lib/mail/log-sender.ts` prints to the log).
+     *
+     * ── Why the display name is NOT in here ─────────────────────────────────
+     * This app serves two brands from one deployment, and only one sending
+     * mailbox needs to exist for both: Rumbo Latino is an Aprende product, not a
+     * separate company. A single `Nombre <addr>` string would then put "Aprende
+     * Institute" in the From line of an email whose body says Rumbo Latino — a
+     * mismatch a recipient reads as a phishing signal. So the ADDRESS is
+     * configuration and the DISPLAY NAME comes from the resolved brand.
+     */
+    MAIL_FROM_ADDRESS: z.string().optional(),
+    /**
+     * Where replies go, if anywhere. Optional but recommended.
+     *
+     * `no-reply@` means a small-business owner who answers the email gets
+     * silence, and this audience answers emails.
+     */
+    MAIL_REPLY_TO: z.string().optional(),
 
     AMPLITUDE_API_KEY: z.string().optional(),
 
@@ -157,6 +195,16 @@ const EnvSchema = z
         message:
           "AI_PROVIDER=mock is disabled: this app runs online-only and requires AI_PROVIDER=azure (+ AZURE_OPENAI_API_KEY, AZURE_OPENAI_BASE_URL)",
         path: ["AI_PROVIDER"],
+      });
+    }
+    // A display name here would be silently ignored — the brand supplies it — and
+    // the operator would be left wondering why their configured name never shows.
+    if (env.MAIL_FROM_ADDRESS && /[<>]/.test(env.MAIL_FROM_ADDRESS)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "MAIL_FROM_ADDRESS must be a bare address like no-reply@mail.aprende.com, with no display name. The name shown to recipients comes from the resolved brand.",
+        path: ["MAIL_FROM_ADDRESS"],
       });
     }
     if (ONLINE_ONLY && env.PERSISTENCE === "memory") {
