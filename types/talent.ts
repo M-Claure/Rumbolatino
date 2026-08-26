@@ -159,6 +159,19 @@ export interface TalentContact {
   linkedInUrl: string | null;
   /** Storage object path — turned into a short-lived signed URL at reveal time. */
   resumePdfPath: string | null;
+  /**
+   * The rendered résumé HTML, snapshotted at publish time — what the employer
+   * preview frames, because iOS Safari will not render a PDF inside an iframe.
+   *
+   * A SNAPSHOT and not a live read of `funnel.resume_html`: the listing is a
+   * projection taken at publish time and `resumePdfPath` is already a snapshot
+   * pointer, so reading the current résumé here would let the preview and the
+   * download disagree the moment someone regenerates without re-publishing.
+   *
+   * Null for listings published before `0015`, and for a résumé with no stored
+   * HTML — the route falls back to framing the PDF.
+   */
+  resumeHtml: string | null;
 }
 
 /** What `talent_projection.ts` returns: the two halves, separated at the type level. */

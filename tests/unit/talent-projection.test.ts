@@ -128,7 +128,30 @@ describe("the public projection carries no contact PII", () => {
       phone: "555 123 4567",
       linkedInUrl: "https://linkedin.com/in/maria",
       resumePdfPath: "user-1/prof-1/curriculum.pdf",
+      // The rendered résumé is contact data too: it prints the full name, the
+      // email and the phone on the page. It belongs on this side of the split
+      // for the same reason the PDF path does.
+      resumeHtml: "<html></html>",
     });
+  });
+
+  it("snapshots the résumé HTML rather than leaving the preview to read it live", () => {
+    // The listing is a projection taken at publish time. If the preview read
+    // `funnel.resume_html` instead, regenerating without re-publishing would
+    // make the framed preview and the downloaded PDF two different résumés.
+    const { contact } = projectTalentProfile(
+      input({ resume: resume({ html: "<html>v2</html>" }) }),
+    );
+    expect(contact.resumeHtml).toBe("<html>v2</html>");
+  });
+
+  it("reports no HTML rather than empty markup when nothing was rendered", () => {
+    // `''` is the column default for every listing published before `0015`, and
+    // the route reads null as "fall back to framing the PDF". An empty string
+    // would be served as a blank document instead.
+    for (const html of ["", "   "]) {
+      expect(projectTalentProfile(input({ resume: resume({ html }) })).contact.resumeHtml).toBeNull();
+    }
   });
 
   it("drops the source traces from bullets — provenance stays server-side", () => {

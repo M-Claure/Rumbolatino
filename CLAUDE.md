@@ -522,7 +522,8 @@ the directory calls a model**: the category comes from a keyword classifier
 - **Reveal and audit are ONE statement.** `talent_reveal_contact` inserts the
   `contact_reveals` row and returns the contact together, so contact data cannot
   be returned without the access being recorded. Two calls from a route could
-  always drop the second.
+  always drop the second. Still true after `0015`: every read writes a row, and
+  `is_repeat` marks the ones that are a re-read rather than suppressing them.
 - **The résumé is streamed, not signed.** `GET /api/talent/:slug/resume` re-checks
   the employer on every request rather than handing out a signed storage URL — a
   signed URL is a forwardable bearer token that outlives the session and the
@@ -531,32 +532,77 @@ the directory calls a model**: the category comes from a keyword classifier
   getServiceResumeFileStore` lists every place that can read another user's file.
   The bucket's own policies are untouched.
 - **Reading a résumé is the PRIMARY action; downloading is the secondary one.**
-  `?inline=1` on that same route flips `Content-Disposition` to `inline`, which is
+  `?inline=1` on that same route serves the résumé for reading in place, which is
   what `components/talent/ResumePreview.tsx` frames. Choosing whom to call takes
   ten seconds of looking at a résumé, and when downloading was the only way to
   look, an employer comparing six people collected six PDFs and wanted one — files
   that outlive the session, the listing, and any later decision to unpublish.
   **A preview is the same disclosure as a download and is treated identically**:
   same session gate, same `contact_reveal` allowance, same `contact_reveals` row,
-  because they are the same bytes carrying the same name, email and phone. A
-  cheaper preview would be a hole drilled through the one limit here that protects
-  people. `lib/talent/resume-delivery.ts` is pure and holds the disposition, the
-  filename (rebuilt from the slug, so a path segment can never reach a response
-  header) and the header set —
-  `tests/unit/talent-resume-delivery.test.ts` asserts the two modes differ by the
-  disposition ALONE, so that claim cannot quietly stop being true. Because the
-  frame renders a PAGE, the inline path returns an HTML refusal instead of the
-  JSON envelope: a rate-limited employer must not read `{"error":…}` inside the
-  preview. `attachment` stays the default so every link written before the preview
-  existed is unchanged. Consequences worth knowing: the frame is mounted only when
-  the employer opens it (never eagerly across a page of 24 results) and stays
-  mounted once opened, so reopening spends nothing; and some browsers — iOS Safari
-  above all — will not render a PDF in an iframe and fail *silently*, which is why
-  the "ábrelo en otra pestaña" link is always offered rather than shown on a guess.
+  because it is the same person's name, email and phone whether rendered or saved.
+  A cheaper preview would be a hole drilled through the one limit here that
+  protects people. `lib/talent/resume-delivery.ts` is pure and holds the
+  disposition, the filename (rebuilt from the slug, so a path segment can never
+  reach a response header) and the header set. Because the frame renders a PAGE,
+  the inline path returns an HTML refusal instead of the JSON envelope: a
+  rate-limited employer must not read `{"error":…}` inside the preview.
+  `attachment` stays the default so every link written before the preview existed
+  is unchanged. Also worth knowing: the frame is mounted only when the employer
+  opens it (never eagerly across a page of 24 results) and stays mounted once
+  opened.
+- **The preview is HTML; the download is the PDF. The browser decided that, not
+  us** (`0015`). iOS Safari hands PDFs to the system viewer at the top-level
+  navigation layer and does not expose that renderer to a subframe, so the framed
+  PDF came up blank on an iPhone — and *silently*: the frame navigates fine,
+  `onLoad` fires, and a native PDF handler has no DOM to probe for "did anything
+  paint". There is no reliable feature test, so this was not detectable and could
+  not be worked around client-side.
+  What is served instead is `lib/resume/resume-renderer.ts`'s own output — the
+  HTML Chromium prints to MAKE the PDF, so it is the same résumé, and its CSS is
+  already a deliberate mirror of the printed sheet (800×1131px is A4 at 96dpi,
+  `max-width:100%` so it scales on a phone). It renders everywhere and stays
+  selectable and zoomable. Safe to serve as an active document because the
+  renderer escapes every piece of user text through `esc()`, emits no script and
+  references no external URL — and `resumeResponseHeaders` sends it under
+  `default-src 'none'; style-src 'unsafe-inline'` so that stays true if the
+  renderer changes. **No `sandbox` on the iframe**, deliberately: without
+  `allow-scripts` it breaks the browser's own PDF viewer, which is still the
+  fallback path. The CSP binds the document rather than the frame and leaves the
+  PDF response alone.
+  The HTML is a **snapshot on `talent_contacts`**, taken at publish time beside
+  `resume_pdf_path` — the same disclosure class (it prints the name, email and
+  phone), and a snapshot because reading `funnel.resume_html` live would let the
+  preview and the download show different résumés the moment someone regenerates
+  without re-publishing. A listing published before `0015` has `''` there and
+  falls back to framing the PDF, which is why the "ábrelo en otra pestaña" link is
+  KEPT and still shown unconditionally: the detection problem did not become
+  solvable, it just stopped applying to most listings.
+  **The safety claim moved from the media type to the header set.**
+  `tests/unit/talent-resume-delivery.test.ts` used to assert the two modes differ
+  by the disposition ALONE; that now holds per *format*, and `SECURITY_HEADER_NAMES`
+  — `Cache-Control`, `X-Content-Type-Options`, `X-Frame-Options` — is what may
+  never vary across either axis. The disclosure was never in the media type; it is
+  in the gate, the limit and the audit row, all unchanged.
 - **`contact_reveal` is the limit that matters** — the only one in the product
   protecting people rather than infrastructure. `employer_register` is capped at
   or below it so minting fresh "employers" is not a way around the per-identity
   reveal limit.
+- **That limit counts PEOPLE, not page loads** (`REVEAL_DEDUPE_MINUTES`, 60, in
+  `lib/rate-limit/policy.ts`). It used to charge per request, so reopening a
+  résumé, reloading, or following the preview's new-tab escape hatch each spent
+  another allowance for one look at one person — which fell hardest on exactly the
+  browsers that NEED that escape hatch, halving an iOS employer's effective quota
+  for the same work. A re-read of the same profile by the same employer inside the
+  window is now free.
+  This loosens nothing about reach: the first read of each new person still costs
+  one, and that is the number that bounds a harvest. The order in the route is
+  load-bearing — `hasRecentReveal` (a boolean, read-only, disclosing nothing) runs
+  BEFORE the charge, because revealing first and refusing afterwards would leave
+  an audit row claiming an employer received details they were denied. It fails
+  CLOSED, unlike the rate limiter itself: this answer can only ever waive a charge
+  against the limit that protects people, so an unreachable counter must mean
+  "charge it". `p_dedupe_minutes` defaults to 0 in SQL for the same reason — a
+  caller who forgets it charges everything.
 - **The directory lives on the SAME deployment, at `/empleadores`.** It is simply
   not linked from anywhere in the builder — no header entry, no footer, no CTA —
   so a job seeker never stumbles into it, and an employer reaches it by being
@@ -897,7 +943,11 @@ service-role only). See **Bolsa de Talento**. `employers` is keyed to
 `auth.users(id)` and holds a row per registered employer, plus its
 `email_verified_at` — the directory gate's only input. `0013` adds
 `employer_email_tokens` (RLS on, no policies) for verification and password-reset
-links. See **Employer accounts**.
+links. See **Employer accounts**. `0015` adds no table: two columns
+(`talent_contacts.resume_html`, `contact_reveals.is_repeat`) and
+`talent_recent_reveal_exists`, which is the only read function here that returns a
+boolean instead of a row — it runs before the rate limit, so there is deliberately
+nothing in it to read.
 
 `0007_simplified_schema.sql` collapsed 13 tables into five;
 `0008_resume_pdf_per_stage.sql` dropped `resume_pdfs` for the fifth. The rules that
@@ -975,7 +1025,9 @@ is missing; improve wording without changing meaning; return valid JSON only.
   For the directory: the projection's exact public key set (so a new field on
   `TalentProfilePublic` fails until someone decides it is publishable), the
   publish gates and consent stamping, taxonomy/classifier determinism, listing
-  expiry, reveal auditing, and the rate-limit policy. For employer accounts: the
+  expiry, reveal auditing (including that a re-read is still logged, marked
+  `is_repeat`, and scoped to one employer and one profile), the delivery header
+  set across both formats and both modes, and the rate-limit policy. For employer accounts: the
   email and password rules in `lib/employers/policy.ts` and the three new limits.
   For authentication: the open-redirect guard (`safeNextPath` — absolute,
   scheme-relative, backslash, traversal, control characters, allow-list), the

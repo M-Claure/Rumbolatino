@@ -4,7 +4,7 @@ import { Errors, isAppError } from "@/lib/errors";
 import { getTalentStore } from "@/lib/repositories";
 import { requireEmployerSession } from "@/lib/employers/session";
 import { getServiceResumeFileStore } from "@/lib/storage";
-import { clientIp } from "@/lib/rate-limit/policy";
+import { REVEAL_DEDUPE_MINUTES, clientIp } from "@/lib/rate-limit/policy";
 import { enforceRateLimit } from "@/lib/services/usage-guard";
 import {
   resumeDeliveryFromQuery,
@@ -17,18 +17,37 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * GET /api/talent/:slug/resume — the candidate's PDF.
+ * GET /api/talent/:slug/resume — the candidate's résumé.
  *
  * ── Two modes, one disclosure ───────────────────────────────────────────────
- * `?inline=1` serves the same bytes with `Content-Disposition: inline`, which is
- * what makes the preview frame in `components/talent/ResumePreview.tsx` possible:
- * an employer can read a résumé without collecting a file. That is the ONLY
- * difference. The session gate, the `contact_reveal` limit and the
- * `contact_reveals` row are identical in both modes, because the PDF carries the
- * person's full name, email and phone whether it is rendered or saved — a
- * cheaper preview would be a hole drilled straight through the one limit here
- * that protects people rather than infrastructure. See
- * `lib/talent/resume-delivery.ts`.
+ * `?inline=1` serves the résumé for reading in place, which is what makes the
+ * preview frame in `components/talent/ResumePreview.tsx` possible: an employer
+ * can read a résumé without collecting a file. The session gate, the
+ * `contact_reveal` limit and the `contact_reveals` row are identical in both
+ * modes, because it is the same person's full name, email and phone whether it is
+ * rendered or saved — a cheaper preview would be a hole drilled straight through
+ * the one limit here that protects people rather than infrastructure.
+ *
+ * ── The preview is HTML, and only the browser made that necessary ───────────
+ * `0015` moved the preview off the PDF. iOS Safari hands PDFs to the system
+ * viewer at the top-level navigation layer and will not render one inside an
+ * iframe, so the frame came up blank — silently, since it navigates fine, fires
+ * `onLoad`, and a native PDF handler has no DOM to inspect. What is served
+ * instead is the résumé HTML that Chromium printed to MAKE the PDF, snapshotted
+ * onto the listing at publish time: the same résumé, rendering everywhere, and
+ * still selectable on a phone. A listing published before `0015` has no snapshot
+ * and falls back to framing the PDF as before. `attachment` is always the PDF —
+ * that is the document an employer keeps. See `lib/talent/resume-delivery.ts`.
+ *
+ * ── The limit counts people, not page loads ─────────────────────────────────
+ * A re-read of a résumé this employer already opened inside
+ * `REVEAL_DEDUPE_MINUTES` does not spend a fresh `contact_reveal`. Every request
+ * used to spend one, so reopening the frame, reloading, or following the
+ * preview's "open in another tab" escape hatch each cost another — which fell
+ * hardest on exactly the browsers that NEED that escape hatch. The audit row is
+ * still written every time and `is_repeat` marks the re-reads, so the log gained
+ * detail rather than losing it. What bounds a harvest is the first read of each
+ * new person, and that still costs one.
  *
  * ── Verified employers only ─────────────────────────────────────────────────
  * This is the most sensitive route in the product. It requires a verified
@@ -82,23 +101,58 @@ async function serveResume(
 ): Promise<NextResponse> {
   const employer = await requireEmployerSession();
   const ip = clientIp(request.headers);
-  // Keyed by the account. Still the limit that matters most — treat lowering
-  // it as cheap and raising it as a real decision.
-  await enforceRateLimit("contact_reveal", { userId: employer.userId, ip });
+  const store = getTalentStore();
+
+  // Charge the limit only for a person this employer has not already been given.
+  // The order is load-bearing: charge, THEN disclose. Revealing first and
+  // refusing afterwards would leave an audit row saying an employer received
+  // details they never got. This read discloses nothing itself — it answers a
+  // boolean — and fails closed, so an unreachable counter charges.
+  const repeat = await store.hasRecentReveal({
+    employerId: employer.userId,
+    slug,
+    withinMinutes: REVEAL_DEDUPE_MINUTES,
+  });
+  if (!repeat) {
+    // Keyed by the account. Still the limit that matters most — treat lowering
+    // it as cheap and raising it as a real decision.
+    await enforceRateLimit("contact_reveal", { userId: employer.userId, ip });
+  }
 
   // One statement in SQL: `talent_reveal_contact` inserts the audit row and
   // returns the contact together, so contact data cannot come back without the
-  // access being recorded.
-  const contact = await getTalentStore().revealContact({
+  // access being recorded. It re-derives the repeat flag for the stamp rather
+  // than trusting what we decided above, so the log and the charge cannot drift.
+  const contact = await store.revealContact({
     employerId: employer.userId,
     slug,
     ip,
+    dedupeMinutes: REVEAL_DEDUPE_MINUTES,
   });
 
   // Unknown, unpublished and expired are all this same 404 — distinguishing
   // them would confirm a given person was once listed, which is exactly what
   // unpublishing is meant to undo.
   if (!contact) throw Errors.notFound("Este perfil ya no está disponible.");
+
+  // Reading in place gets the HTML, which every browser can render in a frame.
+  // Downloading always gets the PDF, and so does a preview of a listing
+  // published before `0015`, which has no HTML snapshot to serve.
+  if (delivery === "inline" && contact.resumeHtml) {
+    const html = contact.resumeHtml;
+    return new NextResponse(html, {
+      status: 200,
+      headers: resumeResponseHeaders({
+        slug,
+        delivery,
+        format: "html",
+        // Bytes, not characters: a résumé full of accented Spanish is longer than
+        // its `.length`, and a short Content-Length truncates the document.
+        byteLength: Buffer.byteLength(html, "utf8"),
+      }),
+    });
+  }
+
   if (!contact.resumePdfPath) {
     throw Errors.notFound("Este perfil no tiene un currículum guardado.");
   }
@@ -108,7 +162,7 @@ async function serveResume(
 
   return new NextResponse(Buffer.from(pdf), {
     status: 200,
-    headers: resumeResponseHeaders({ slug, delivery, byteLength: pdf.byteLength }),
+    headers: resumeResponseHeaders({ slug, delivery, format: "pdf", byteLength: pdf.byteLength }),
   });
 }
 

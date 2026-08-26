@@ -52,6 +52,30 @@ export type LimitedOperation =
   /** Asking for a verification or password-reset email. Each one SENDS MAIL. */
   | "employer_email";
 
+/**
+ * How long a re-read of the same résumé by the same employer stays the same
+ * disclosure, for `contact_reveal` accounting.
+ *
+ * Sixty minutes, matching that limit's own window, so the ceiling reads as
+ * "forty DISTINCT people an hour" rather than "forty page loads an hour". Those
+ * were the same number only if nobody ever reopened anything, and in practice
+ * they were not: the résumé preview's "open in another tab" escape hatch is a
+ * second request, so was a reload, and so was reopening a candidate after
+ * looking at their profile page. An employer on iOS — where a PDF will not
+ * render in an iframe and that escape hatch is the only way to read one — burned
+ * the limit at twice the rate of one on a laptop, for the same work.
+ *
+ * This LOOSENS nothing about who can be reached: a first read of every new
+ * person still costs one, which is the number that bounds a harvest. It stops
+ * charging for looking twice at the same person, which was never the thing worth
+ * bounding. `contact_reveals` still records every read — `is_repeat` marks which
+ * were re-reads, so the log gained detail rather than losing it.
+ *
+ * Mirrored as `p_dedupe_minutes` at the call site in `talent_reveal_contact` and
+ * `talent_recent_reveal_exists` (`0015`); the number itself lives only here.
+ */
+export const REVEAL_DEDUPE_MINUTES = 60;
+
 export interface LimitRule {
   /** Requests allowed per window. */
   readonly limit: number;
@@ -145,7 +169,9 @@ export const LIMITS: Record<LimitedOperation, LimitRule> = {
       "networks does not reset it, and it is the ONLY ceiling left on bulk collection — " +
       "lowering it is cheap, raising it is a real decision. Note that PREVIEWING a résumé " +
       "spends one of these too (`?inline=1` on the same route): it is the same bytes and the " +
-      "same disclosure, and a cheaper preview would be a way around this number.",
+      "same disclosure, and a cheaper preview would be a way around this number. What it no " +
+      "longer spends is a RE-READ of a résumé this employer already opened — see " +
+      "REVEAL_DEDUPE_MINUTES, which is what makes forty mean forty people.",
   },
   employer_register: {
     limit: 10,

@@ -54,6 +54,7 @@ async function seed(
       phone: "555 123 4567",
       linkedInUrl: null,
       resumePdfPath: "u/p/curriculum.pdf",
+      resumeHtml: "<html>cv</html>",
     },
     manageToken: `token-${p.slug}`,
     expiresAt: over.expiresAt ?? talentExpiryFrom(p.publishedAt),
@@ -281,6 +282,96 @@ describe("revealing a contact", () => {
   it("stops revealing once a listing expires", async () => {
     await seed({ slug: "a-1" }, { expiresAt: new Date(Date.now() - HOUR).toISOString() });
     expect(await talent.revealContact({ employerId: null, slug: "a-1" })).toBeNull();
+  });
+
+  it("hands over the résumé HTML the preview frames, alongside the PDF path", async () => {
+    await seed({ slug: "a-1" });
+    const contact = await talent.revealContact({ employerId: null, slug: "a-1" });
+    // Both, because the preview is HTML (iOS Safari will not frame a PDF) while
+    // a download is still the PDF. They are two views of one disclosure.
+    expect(contact?.resumeHtml).toBe("<html>cv</html>");
+    expect(contact?.resumePdfPath).toBe("u/p/curriculum.pdf");
+  });
+});
+
+// ── Re-reading the same person ──────────────────────────────────────────────
+// The `contact_reveal` limit is the only one in this product protecting people
+// rather than infrastructure, and it was charging per REQUEST. So reopening a
+// résumé, reloading it, or following the preview's "open in another tab" escape
+// hatch each spent another allowance for one look at one person — worst on the
+// browsers that need that escape hatch. `is_repeat` is what lets the limit count
+// people while the audit log keeps counting reads.
+describe("repeat reveals", () => {
+  const employer = "employer-1";
+
+  it("records every read, and marks the ones that are re-reads", async () => {
+    await seed({ slug: "a-1" });
+
+    await talent.revealContact({ employerId: employer, slug: "a-1", dedupeMinutes: 60 });
+    await talent.revealContact({ employerId: employer, slug: "a-1", dedupeMinutes: 60 });
+
+    // Two rows: the log answers "how often did they look?" as well as "who has
+    // my résumé?". Dropping the second row would have lost the first question.
+    expect(talent.reveals).toHaveLength(2);
+    expect(talent.reveals.map((r) => r.isRepeat)).toEqual([false, true]);
+  });
+
+  it("treats a different person as a first read, which is what bounds a harvest", async () => {
+    await seed({ slug: "a-1" });
+    await seed({ slug: "b-2" });
+
+    await talent.revealContact({ employerId: employer, slug: "a-1", dedupeMinutes: 60 });
+    await talent.revealContact({ employerId: employer, slug: "b-2", dedupeMinutes: 60 });
+
+    expect(talent.reveals.map((r) => r.isRepeat)).toEqual([false, false]);
+    expect(await talent.hasRecentReveal({ employerId: employer, slug: "b-2", withinMinutes: 60 }))
+      .toBe(true);
+  });
+
+  it("keeps one employer's reads from waiving another's charge", async () => {
+    await seed({ slug: "a-1" });
+    await talent.revealContact({ employerId: employer, slug: "a-1", dedupeMinutes: 60 });
+
+    expect(
+      await talent.hasRecentReveal({ employerId: "employer-2", slug: "a-1", withinMinutes: 60 }),
+    ).toBe(false);
+  });
+
+  it("counts nothing as recent without a window, or without an employer", async () => {
+    await seed({ slug: "a-1" });
+    await talent.revealContact({ employerId: employer, slug: "a-1", dedupeMinutes: 60 });
+
+    // A caller that omits the window charges every read — the conservative
+    // direction, and the reason `p_dedupe_minutes` defaults to 0 in SQL.
+    expect(await talent.hasRecentReveal({ employerId: employer, slug: "a-1", withinMinutes: 0 }))
+      .toBe(false);
+    // Nothing to key a repeat on. An anonymous read is always a first read.
+    expect(await talent.hasRecentReveal({ employerId: null, slug: "a-1", withinMinutes: 60 }))
+      .toBe(false);
+  });
+
+  it("stops waiving the charge once the window has passed", async () => {
+    await seed({ slug: "a-1" });
+    await talent.revealContact({ employerId: employer, slug: "a-1", dedupeMinutes: 60 });
+
+    // The stored row is minutes old at most, so a one-minute window is the way
+    // to look at it from outside: an hour later, this read is charged again.
+    expect(await talent.hasRecentReveal({ employerId: employer, slug: "a-1", withinMinutes: 60 }))
+      .toBe(true);
+    talent.reveals[0]!.at = new Date(Date.now() - 2 * HOUR).toISOString();
+    expect(await talent.hasRecentReveal({ employerId: employer, slug: "a-1", withinMinutes: 60 }))
+      .toBe(false);
+  });
+
+  it("waives nothing when the dedupe window is shorter than the gap", async () => {
+    await seed({ slug: "a-1" });
+    await talent.revealContact({ employerId: employer, slug: "a-1", dedupeMinutes: 60 });
+    talent.reveals[0]!.at = new Date(Date.now() - 30 * 60_000).toISOString();
+
+    expect(await talent.hasRecentReveal({ employerId: employer, slug: "a-1", withinMinutes: 60 }))
+      .toBe(true);
+    expect(await talent.hasRecentReveal({ employerId: employer, slug: "a-1", withinMinutes: 15 }))
+      .toBe(false);
   });
 });
 

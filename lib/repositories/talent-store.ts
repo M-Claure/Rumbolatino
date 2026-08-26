@@ -66,6 +66,20 @@ export interface RevealContactInput {
   employerId: string | null;
   slug: string;
   ip?: string | null;
+  /**
+   * How far back a previous reveal of the SAME profile to the SAME employer
+   * still counts as the same disclosure. Only stamps `contact_reveals.is_repeat`
+   * — the row is written either way. 0, the default, marks everything a first
+   * read, which is the conservative direction for a caller that forgets.
+   */
+  dedupeMinutes?: number;
+}
+
+export interface RecentRevealInput {
+  employerId: string | null;
+  slug: string;
+  /** Same window as `RevealContactInput.dedupeMinutes`; 0 means "nothing is recent". */
+  withinMinutes: number;
 }
 
 export interface TalentDirectoryStore {
@@ -90,6 +104,21 @@ export interface TalentDirectoryStore {
    * the slug is not live — nothing to reveal, so nothing to log.
    */
   revealContact(input: RevealContactInput): Promise<TalentContact | null>;
+
+  /**
+   * Has this employer already been given this profile's contact, recently?
+   *
+   * Read-only and boolean by design: it runs BEFORE the rate limit, which is
+   * before the caller has earned any contact data, so there is deliberately
+   * nothing here to read. The route uses it to avoid charging a re-read — an
+   * employer reopening the same résumé, or following the preview's
+   * "open in another tab" escape hatch, is one disclosure, not two.
+   *
+   * It cannot be folded into `revealContact`: the limit has to be charged before
+   * anything is disclosed, and revealing first would write an audit row for
+   * details the employer was then refused.
+   */
+  hasRecentReveal(input: RecentRevealInput): Promise<boolean>;
 
   /** Resolve an unpublish/renew token. Null when it matches nothing. */
   findByManageToken(token: string): Promise<{ slug: string; funnelId: string } | null>;
@@ -136,8 +165,17 @@ interface MemoryRow {
  */
 export class MemoryTalentStore implements TalentDirectoryStore {
   private readonly rows = new Map<string, MemoryRow>();
-  /** Kept so tests can assert that a reveal was actually audited. */
-  readonly reveals: Array<{ employerId: string | null; slug: string; at: string }> = [];
+  /**
+   * Kept so tests can assert that a reveal was actually audited. `isRepeat`
+   * mirrors the column `0015` adds: every read is still recorded, and a re-read
+   * inside the window is recorded AS a re-read.
+   */
+  readonly reveals: Array<{
+    employerId: string | null;
+    slug: string;
+    at: string;
+    isRepeat: boolean;
+  }> = [];
 
   private nextId = 1;
 
@@ -252,12 +290,35 @@ export class MemoryTalentStore implements TalentDirectoryStore {
   async revealContact(input: RevealContactInput): Promise<TalentContact | null> {
     const row = this.live().find((r) => r.profile.slug === input.slug);
     if (!row) return null;
+    const isRepeat = this.recentReveal({
+      employerId: input.employerId,
+      slug: input.slug,
+      withinMinutes: input.dedupeMinutes ?? 0,
+    });
     this.reveals.push({
       employerId: input.employerId,
       slug: input.slug,
       at: new Date().toISOString(),
+      isRepeat,
     });
     return { ...row.contact };
+  }
+
+  async hasRecentReveal(input: RecentRevealInput): Promise<boolean> {
+    return this.recentReveal(input);
+  }
+
+  /**
+   * Shared by both, so the stamp on the audit row and the answer the rate limit
+   * acts on cannot disagree — the same reason the Postgres side computes it in
+   * the reveal statement rather than trusting what the caller was told.
+   */
+  private recentReveal({ employerId, slug, withinMinutes }: RecentRevealInput): boolean {
+    if (!employerId || withinMinutes <= 0) return false;
+    const cutoff = Date.now() - withinMinutes * 60_000;
+    return this.reveals.some(
+      (r) => r.employerId === employerId && r.slug === slug && new Date(r.at).getTime() > cutoff,
+    );
   }
 
   async findByManageToken(token: string): Promise<{ slug: string; funnelId: string } | null> {
@@ -401,6 +462,10 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
         phone: input.contact.phone,
         linkedin_url: input.contact.linkedInUrl,
         resume_pdf_path: input.contact.resumePdfPath,
+        // Snapshotted with the PDF path, so a later regeneration cannot make the
+        // preview and the download show different résumés. `''` rather than null
+        // to match the column default — the route reads "no HTML" either way.
+        resume_html: input.contact.resumeHtml ?? "",
         manage_token: input.manageToken,
       },
       // A plain upsert, which DOES overwrite `manage_token`. That is safe only
@@ -500,6 +565,7 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
       p_employer: input.employerId,
       p_slug: input.slug,
       p_ip: input.ip ?? null,
+      p_dedupe_minutes: input.dedupeMinutes ?? 0,
     });
     if (error) throw new Error(`No se pudo obtener el contacto: ${error.message}`);
 
@@ -509,6 +575,7 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
       phone: string | null;
       linkedin_url: string | null;
       resume_pdf_path: string | null;
+      resume_html: string | null;
     }>;
     const row = rows[0];
     if (!row) return null;
@@ -518,7 +585,30 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
       phone: row.phone,
       linkedInUrl: row.linkedin_url,
       resumePdfPath: row.resume_pdf_path,
+      // `''` is the column default for everything published before 0015. Both it
+      // and null mean the same thing to the route: frame the PDF instead.
+      resumeHtml: row.resume_html?.trim() ? row.resume_html : null,
     };
+  }
+
+  async hasRecentReveal(input: RecentRevealInput): Promise<boolean> {
+    // No employer id means nothing to key a repeat on, and no window means
+    // nothing counts as recent. Neither is worth a round trip.
+    if (!input.employerId || input.withinMinutes <= 0) return false;
+
+    const { data, error } = await this.service.rpc("talent_recent_reveal_exists", {
+      p_employer: input.employerId,
+      p_slug: input.slug,
+      p_within_minutes: input.withinMinutes,
+    });
+    // Fails CLOSED, unlike the rate limiter itself: this answer can only ever
+    // WAIVE a charge against the limit that protects people, so an unreachable
+    // counter has to mean "charge it", never "let it through".
+    if (error) {
+      console.error("[talent recent reveal]", error);
+      return false;
+    }
+    return data === true;
   }
 
   async findByManageToken(token: string): Promise<{ slug: string; funnelId: string } | null> {

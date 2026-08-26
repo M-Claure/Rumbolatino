@@ -269,6 +269,10 @@ export function projectTalentProfile(input: TalentProjectionInput): TalentProjec
       linkedInUrl: personal?.linkedInUrl?.trim() || null,
       // The PDF for the résumé's own improvement round — see `resumePdfPath`.
       resumePdfPath: resume.pdfPath,
+      // The same résumé as markup, for the preview frame. Taken here rather than
+      // read live at reveal time so the two can never show different versions of
+      // the same person — both are snapshots of this publish.
+      resumeHtml: resume.html.trim() || null,
     },
   };
 }

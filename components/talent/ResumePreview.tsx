@@ -23,17 +23,47 @@ import { useEffect, useRef, useState } from "react";
  * eagerly on a page of 24 results — and stays mounted once opened, so closing
  * and reopening the same résumé does not spend a second one.
  *
+ * Re-reading the same person no longer costs anything anyway: `0015` made the
+ * route waive the charge when this employer was already given this profile
+ * within `REVEAL_DEDUPE_MINUTES`, so the footer's new-tab link, a reload and a
+ * second look are all free. The limit counts PEOPLE. That mattered most here —
+ * charging per request meant an employer on a browser that needed the escape
+ * hatch paid twice for one look.
+ *
  * ── One dialog per row, not one per table ───────────────────────────────────
  * Keeping the state here is what lets `TalentTable` and `/talento/[slug]` remain
  * Server Components: they render this and nothing else changes. A single lifted
  * dialog would be a tidier DOM and would make the whole results table a Client
  * Component for it.
  *
- * ── The escape hatch is not decoration ─────────────────────────────────────
- * Some browsers — iOS Safari above all — will not render a PDF inside an iframe,
- * and they fail silently by showing a blank box or only the first page. There is
- * no reliable way to detect that from here, so the footer link is always
- * offered rather than shown on a guess.
+ * ── The frame holds HTML, not a PDF, and the browser decided that ──────────
+ * iOS Safari will not render a PDF inside an iframe. It hands PDFs to the system
+ * viewer at the top-level navigation layer and does not expose that renderer to a
+ * subframe, so this dialog used to come up blank on an iPhone — silently, because
+ * the frame navigates fine, `onLoad` fires on schedule, and a native PDF handler
+ * has no DOM to probe for "did anything paint". There is no reliable feature test
+ * for it either.
+ *
+ * So `0015` stopped serving a PDF here. `?inline=1` now returns the résumé's own
+ * HTML — literally what Chromium printed to make the PDF, snapshotted onto the
+ * listing at publish time — which renders in every browser, stays selectable and
+ * zoomable on a phone, and reflows instead of demanding a pinch. "Descargar PDF"
+ * is untouched: that is the document an employer keeps.
+ *
+ * ── The escape hatch is still not decoration ───────────────────────────────
+ * A listing published before `0015` has no HTML snapshot, so its preview is
+ * still a framed PDF and can still fail the old way. The footer link is
+ * therefore kept and still shown unconditionally rather than on a guess — the
+ * detection problem did not become solvable, it just stopped applying to most
+ * listings. Following it costs no extra reveal — see the reveal note above.
+ *
+ * ── No `sandbox` attribute, deliberately ───────────────────────────────────
+ * The obvious hardening for a framed document built from user text, and the
+ * wrong tool here: `sandbox` without `allow-scripts` breaks the browser's own
+ * PDF viewer, which is precisely the fallback path above. The protection lives
+ * on the response instead — `resumeResponseHeaders` sends the HTML with
+ * `default-src 'none'; style-src 'unsafe-inline'`, which binds the document
+ * itself rather than the frame around it, and leaves the PDF response alone.
  */
 export function ResumePreview({
   slug,
@@ -113,8 +143,8 @@ export function ResumePreview({
         </a>
       </div>
 
-      {/* No JavaScript: the preview URL still renders the PDF in the browser's
-          own viewer, so nothing about this feature depends on the button. */}
+      {/* No JavaScript: the preview URL is a page in its own right, so the
+          résumé is still reachable without the button. */}
       <noscript>
         <a href={previewUrl} className="text-xs font-medium text-accent-dark hover:underline">
           Ver el currículum
@@ -182,7 +212,7 @@ export function ResumePreview({
               >
                 Ábrelo en otra pestaña
               </a>
-              . Algunos teléfonos no pueden mostrar un PDF dentro de la página.
+              . No cuenta como una segunda consulta.
             </footer>
           </div>
         </div>

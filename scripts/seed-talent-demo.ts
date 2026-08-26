@@ -561,6 +561,10 @@ async function seed(admin: SupabaseClient, args: Args): Promise<void> {
           phone: projection.contact.phone,
           linkedin_url: projection.contact.linkedInUrl,
           resume_pdf_path: projection.contact.resumePdfPath,
+          // The preview frames this, not the PDF — see `0015`. A seeded listing
+          // without it falls back to framing the PDF, which is exactly the path
+          // that shows nothing on an iPhone, i.e. during the demo.
+          resume_html: projection.contact.resumeHtml ?? "",
           manage_token:
             (existingContact as { manage_token?: string } | null)?.manage_token ??
             randomBytes(32).toString("base64url"),
