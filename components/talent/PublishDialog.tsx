@@ -15,9 +15,16 @@ import { PUBLISH_TERMS_LABEL, TERMS_URL } from "@/lib/legal/terms";
  * they are trying to download their CV. Anything more than one decision here
  * costs opt-ins and gets in the way of the thing they actually came for.
  *
- * Both answers lead straight back to the download. "No, gracias" is a real,
- * equally-weighted option, not a dismissal tucked into a corner: an opt-in that
- * is awkward to decline is not much of an opt-in.
+ * Both answers lead straight back to the download — `onResolved` fires the same
+ * download the button does, so answering this question IS the download. It used
+ * to only close itself, which left the person looking at the workspace with the
+ * PDF they came for still unfetched; the popup had silently eaten the tap they
+ * meant for "Descargar PDF", and they had to find and press it again.
+ *
+ * "No, gracias" is a real, equally-weighted option, not a dismissal tucked into a
+ * corner: an opt-in that is awkward to decline is not much of an opt-in — and it
+ * downloads too, for the same reason. Declining the directory is not declining
+ * your résumé.
  *
  * The copy names exactly what employers get, in the order they get it, because
  * the checkbox is the entire consent — there is no second screen to read.
@@ -44,7 +51,18 @@ function remember(profileId: string) {
   }
 }
 
-export function PublishDialog({ profileId }: { profileId: string }) {
+export function PublishDialog({
+  profileId,
+  onResolved,
+}: {
+  profileId: string;
+  /**
+   * Called once the person has answered — published or declined — and never when
+   * the answer failed or when they remove an existing listing. The workspace
+   * wires this to the PDF download.
+   */
+  onResolved?: () => void;
+}) {
   const [defaults, setDefaults] = useState<PublishDefaults | null>(null);
   const [open, setOpen] = useState(false);
   const [agreed, setAgreed] = useState(false);
@@ -79,7 +97,10 @@ export function PublishDialog({ profileId }: { profileId: string }) {
       await api.publishProfile(profileId);
       setPublished(true);
       setOpen(false);
+      onResolved?.();
     } catch (err) {
+      // Deliberately no download on failure: the dialog stays open showing the
+      // error, so the person is still answering the question, not past it.
       setError(err instanceof ApiError ? err.message : "No se pudo publicar. Intenta de nuevo.");
     } finally {
       setSaving(false);
@@ -89,6 +110,7 @@ export function PublishDialog({ profileId }: { profileId: string }) {
   function decline() {
     remember(profileId);
     setOpen(false);
+    onResolved?.();
   }
 
   async function unpublish() {

@@ -5,6 +5,15 @@ import { planNextQuestion } from "@/lib/question-engine/adaptive-planner";
 import { recordQuestionShown } from "@/lib/services/funnel-telemetry";
 
 export const dynamic = "force-dynamic";
+// This route reaches the AI provider, so it needs the same ceiling as the other model-
+// touching routes rather than the platform's ~10s default. Plans the next question;
+// deterministic today, but it runs through the same provider seam.
+// `FUNCTION_BUDGET_MS` in `lib/request-deadline.ts` assumes this number: the shared
+// deadline hands the model whatever is left of it, so a route that silently had a
+// fraction of it was killed by the platform mid-call — a 504 with no envelope — while
+// the deadline still believed it had most of a minute. Pinned by tests/unit/route-
+// budgets.test.ts.
+export const maxDuration = 60;
 
 /** GET /api/resume-profiles/:id/next-question — the most useful next question. */
 export async function GET(_request: Request, { params }: { params: { id: string } }) {

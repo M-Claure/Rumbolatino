@@ -302,7 +302,7 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
           `finalizedAt`: a listing built from a half-answered funnel is not
           something anyone would choose on purpose, and the publish route
           enforces the same gate server-side. */}
-      {finalizedAt && <PublishDialog profileId={profileId} />}
+      {finalizedAt && <PublishDialog profileId={profileId} onResolved={download} />}
 
       {/* Analysis + improvement loop */}
       <Card>

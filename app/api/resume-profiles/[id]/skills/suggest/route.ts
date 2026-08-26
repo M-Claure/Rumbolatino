@@ -5,6 +5,14 @@ import { assembleProfileState } from "@/lib/profile-state";
 import { inferAndPersistSkills } from "@/lib/skills/skill-inference";
 
 export const dynamic = "force-dynamic";
+// This route reaches the AI provider, so it needs the same ceiling as the other model-
+// touching routes rather than the platform's ~10s default. Infers skills from the
+// answers captured so far. `FUNCTION_BUDGET_MS` in `lib/request-deadline.ts` assumes
+// this number: the shared deadline hands the model whatever is left of it, so a route
+// that silently had a fraction of it was killed by the platform mid-call — a 504 with
+// no envelope — while the deadline still believed it had most of a minute. Pinned by
+// tests/unit/route-budgets.test.ts.
+export const maxDuration = 60;
 
 /**
  * POST /api/resume-profiles/:id/skills/suggest

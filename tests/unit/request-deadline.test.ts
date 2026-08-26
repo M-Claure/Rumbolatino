@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FUNCTION_BUDGET_MS,
+  MAX_BOOT_CHARGE_MS,
   RESPONSE_MARGIN_MS,
   UNLIMITED_DEADLINE,
   resetColdStartForTests,
@@ -22,20 +23,38 @@ describe("startRequestDeadline", () => {
     expect(d.remainingMs()).toBeGreaterThan(FUNCTION_BUDGET_MS - RESPONSE_MARGIN_MS - 1_000);
   });
 
-  // The failure the user hit: a first request 504s, the retry succeeds. The
-  // difference is boot time the old fixed allowance could not see.
+  // A first request pays for the runtime boot; the retry, now warm, does not.
+  // That difference is why a cold generation 504s and the second attempt works.
   it("charges the runtime boot to the FIRST request of a process, not later ones", () => {
-    vi.spyOn(process, "uptime").mockReturnValue(15); // 15s spent booting
+    vi.spyOn(process, "uptime").mockReturnValue(5); // 5s spent booting
     const cold = startRequestDeadline();
-    expect(cold.remainingMs()).toBeLessThanOrEqual(FUNCTION_BUDGET_MS - RESPONSE_MARGIN_MS - 15_000);
+    expect(cold.remainingMs()).toBeLessThanOrEqual(FUNCTION_BUDGET_MS - RESPONSE_MARGIN_MS - 5_000);
 
     const warm = startRequestDeadline();
     expect(warm.remainingMs()).toBeGreaterThan(FUNCTION_BUDGET_MS - RESPONSE_MARGIN_MS - 1_000);
   });
 
-  it("floors at zero rather than going negative", () => {
-    vi.spyOn(process, "uptime").mockReturnValue(600);
-    expect(startRequestDeadline().remainingMs()).toBe(0);
+  /*
+   * The regression this clamp exists for. `process.uptime()` is only a PROXY for
+   * boot time, and a worthless one on a dev server, a self-hosted container, or a
+   * platform instance warmed long before the request — all of which report
+   * minutes. Charged in full, that left zero budget on the first request to touch
+   * this module, every model call collapsed to its 6s floor, and the funnel showed
+   * "El servicio de IA tardó demasiado en responder" however fast the model was.
+   */
+  it("does not let a long-lived process consume the whole budget", () => {
+    vi.spyOn(process, "uptime").mockReturnValue(3_600); // an hour-old dev server
+    const d = startRequestDeadline();
+    expect(d.remainingMs()).toBeGreaterThanOrEqual(
+      FUNCTION_BUDGET_MS - RESPONSE_MARGIN_MS - MAX_BOOT_CHARGE_MS - 1_000,
+    );
+    // Comfortably above the 6s floor a model call would otherwise be given.
+    expect(d.remainingMs()).toBeGreaterThan(30_000);
+  });
+
+  it("never reports a negative budget", () => {
+    const d = startRequestDeadline(0);
+    expect(d.remainingMs()).toBe(0);
   });
 });
 
