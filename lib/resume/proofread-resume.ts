@@ -53,8 +53,28 @@ export async function proofreadAndRerender(
     b.bullets.forEach((bl, i) => items.push({ id: bulletId("proj", bi, i), text: bl.text })),
   );
 
+  // Nothing written yet — no correction to make, and an empty request would
+  // still cost a model call.
+  if (items.length === 0) return { resume, notes: [] };
+
   // 2. Ask the model to correct them (facts preserved).
-  const { items: corrected, notes } = await ai.proofreadResume({ items });
+  //
+  // A failure here is NOT fatal, and must never be. Proofreading is cosmetic —
+  // accents, punctuation, capitalisation — over a résumé that is already complete
+  // and source-traced. Letting it throw made an optional polish step a hard gate
+  // in front of the download: the UI finalizes only after a successful proofread,
+  // so one slow model call left the user holding a finished résumé they could not
+  // get out of the product. Keep the text as written and let them finish.
+  let corrected: Awaited<ReturnType<AIProvider["proofreadResume"]>>["items"];
+  let notes: string[];
+  try {
+    ({ items: corrected, notes } = await ai.proofreadResume({ items }));
+  } catch (err) {
+    console.error(`[proofread] correction pass failed for ${profileId}; keeping original text`, err);
+    // Skip the re-render too: with no corrections there is nothing to re-render,
+    // and a new version would only overwrite the round's PDF with identical bytes.
+    return { resume, notes: [] };
+  }
   const fixes = new Map(corrected.map((c) => [c.id, c.text]));
   const apply = (id: string, original: string): string => {
     const fixed = fixes.get(id);

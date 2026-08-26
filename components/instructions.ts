@@ -68,6 +68,37 @@ const BY_SECTION: Record<ResumeSection, StepInstruction> = {
   },
 };
 
+/**
+ * Per-QUESTION overrides, checked before the section default.
+ *
+ * `personal_information` is one section covering three unrelated questions — the
+ * name, a contact channel, and where the person lives — so its section banner
+ * ("Escribe tu nombre y cómo pueden encontrarte") was shown verbatim while the
+ * screen asked something else entirely. Someone answering "¿En qué ciudad vives?"
+ * read an instruction telling them to write their name, which is exactly the
+ * confusion this banner exists to prevent.
+ *
+ * Only questions whose section banner would actively mislead need an entry here;
+ * everything else falls through to BY_SECTION.
+ */
+const BY_QUESTION: Record<string, StepInstruction> = {
+  personal_name: {
+    icon: "👤",
+    title: "¿Cómo te llamas?",
+    body: "Escribe tu nombre y tus apellidos, como quieres que aparezcan en tu currículum.",
+  },
+  personal_contact: {
+    icon: "📞",
+    title: "¿Cómo te pueden contactar?",
+    body: "Escribe tu teléfono o tu correo. Con uno basta. Es para que las empresas te puedan escribir.",
+  },
+  personal_location: {
+    icon: "📍",
+    title: "¿Cuál es tu código postal?",
+    body: "Escribe los cinco números de tu código postal. Sirve para que las empresas cerca de ti te encuentren. Si no quieres decirlo, puedes saltar este paso.",
+  },
+};
+
 const FALLBACK: StepInstruction = {
   icon: "✍️",
   title: "Cuéntanos más",
@@ -86,5 +117,5 @@ export function stepInstruction(question: AdaptiveQuestion): StepInstruction {
   if (question.inputType === "review" || question.nextAction === "review_profile") {
     return BY_SECTION.review;
   }
-  return BY_SECTION[question.section] ?? FALLBACK;
+  return BY_QUESTION[question.questionId] ?? BY_SECTION[question.section] ?? FALLBACK;
 }

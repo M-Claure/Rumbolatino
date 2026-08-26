@@ -60,6 +60,27 @@ describe("proofreadAndRerender", () => {
     expect(resume.version).toBeGreaterThan(before!.version);
   });
 
+  // The proofread pass is cosmetic, but the UI finalizes only after it returns —
+  // and finalizing is what unlocks the download. So a throw here did not degrade
+  // the polish, it stranded a finished résumé inside the product with no way out.
+  it("returns the résumé unchanged when the model call fails, instead of throwing", async () => {
+    const id = await seedGenerated();
+    const before = await store.getLatestGeneratedResume(id);
+
+    const brokenProofer = Object.assign(Object.create(Object.getPrototypeOf(ai)), ai, {
+      proofreadResume: async () => {
+        throw new Error("El servicio de IA tardó demasiado en responder.");
+      },
+    });
+
+    const { resume, notes } = await proofreadAndRerender(store, brokenProofer, id);
+
+    expect(resume.id).toBe(before!.id);
+    expect(resume.version).toBe(before!.version); // no wasted version or PDF overwrite
+    expect(resume.professionalSummary).toBe(before!.professionalSummary);
+    expect(notes).toEqual([]);
+  });
+
   it("keeps original text for any snippet the model omits", async () => {
     const id = await seedGenerated();
     const before = await store.getLatestGeneratedResume(id);

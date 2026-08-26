@@ -86,6 +86,40 @@ const CONSIDERED: CallBudget = { effort: "medium" };
 const MODEL_MAX_TOKENS = 32000;
 const TRUNCATION_HEADROOM = 1.75;
 
+/*
+ * ── Time budget ─────────────────────────────────────────────────────────────
+ *
+ * Every route that reaches the model declares `maxDuration = 60`. Past that the
+ * platform kills the function and answers **504** — with no JSON envelope, so
+ * `lib/client/api.ts` can only report a bare "Error 504", and no server log line
+ * of our own explains it. Tokens already spent are still billed.
+ *
+ * Nothing used to keep a call inside that box. The SDK's own defaults are an
+ * order of magnitude larger (a 600s request timeout and 2 silent retries), and
+ * `callJson` loops up to 3 times on top of that, each truncation retry granted
+ * *more* room and therefore slower than the last. The worst case was minutes of
+ * work inside a sixty-second function: a guaranteed kill.
+ *
+ * So the retry loop gets a wall-clock deadline. `PDF_HEADROOM_MS` is what it
+ * leaves behind for the Chromium render and Storage upload that run *after* the
+ * model on the generate and proofread paths (`ResumeArtifactWriter`, ~1–3s warm
+ * and rather more on a cold start).
+ */
+const FUNCTION_BUDGET_MS = 60_000;
+const PDF_HEADROOM_MS = 14_000;
+const CALL_DEADLINE_MS = FUNCTION_BUDGET_MS - PDF_HEADROOM_MS;
+/** Below this much time left, a retry cannot finish — don't start it. */
+const MIN_ATTEMPT_MS = 6_000;
+/**
+ * Backoff after a *transport* failure, multiplied by the attempt number. Small:
+ * the deadline leaves room for roughly two attempts, so this is here to stop an
+ * instant re-hit of a throttled deployment, not to wait one out. Nothing is
+ * gained by sleeping on a schema failure, so only the catch path uses it.
+ */
+const BACKOFF_MS = 500;
+
+const sleep = (ms: number) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
+
 /**
  * Real Azure-OpenAI-backed provider. Every call:
  *  1. sends the factuality instructions + a task prompt,
@@ -118,7 +152,16 @@ export class AzureOpenAIProvider implements AIProvider {
     private readonly model: string,
     private readonly spend?: CallSpendRecorder,
   ) {
-    this.client = new OpenAI({ apiKey, baseURL });
+    // `maxRetries: 0` is deliberate, not a loss of resilience: `callJson` already
+    // retries, and it is the only layer that can see the deadline. Nested retries
+    // multiplied — 3 app attempts x 3 SDK attempts — with the backoff invisible to
+    // the log, so a throttled deployment looked like one slow call.
+    this.client = new OpenAI({
+      apiKey,
+      baseURL,
+      timeout: CALL_DEADLINE_MS,
+      maxRetries: 0,
+    });
   }
 
   /*
@@ -207,7 +250,17 @@ export class AzureOpenAIProvider implements AIProvider {
   ): Promise<z.infer<S>> {
     let lastError: unknown;
     let truncations = 0;
+    const deadline = Date.now() + CALL_DEADLINE_MS;
     for (let attempt = 0; attempt < 3; attempt++) {
+      // Time left for this attempt. Starting one that cannot finish trades a
+      // reportable error for a 504 and bills the tokens anyway.
+      const remainingMs = deadline - Date.now();
+      if (attempt > 0 && remainingMs < MIN_ATTEMPT_MS) {
+        console.error(
+          `[ai] ${label}: out of time after ${attempt} attempt(s); ${remainingMs}ms left of ${CALL_DEADLINE_MS}ms`,
+        );
+        break;
+      }
       const content =
         attempt === 0
           ? prompt
@@ -234,7 +287,7 @@ export class AzureOpenAIProvider implements AIProvider {
           // Do not let the Azure resource retain the response bodies: they contain
           // the person's own words about their work history.
           store: false,
-        });
+        }, { timeout: Math.max(remainingMs, MIN_ATTEMPT_MS) });
         // Log real token usage + estimated cost for every call (even truncated
         // retries, which still bill). This is what makes per-generation cost
         // visible in the server logs.
@@ -271,6 +324,13 @@ export class AzureOpenAIProvider implements AIProvider {
           );
         }
         lastError = err;
+        // With `maxRetries: 0` the SDK no longer backs off on our behalf, and
+        // firing the next attempt immediately into a 429 or an overloaded
+        // deployment just buys the same error twice. Bounded so the sleep can
+        // never eat the room the next attempt needs — which it re-checks anyway.
+        await sleep(
+          Math.min(BACKOFF_MS * (attempt + 1), Math.max(0, deadline - Date.now() - MIN_ATTEMPT_MS)),
+        );
         continue;
       }
       const parsed = tryParseJson(text);
@@ -282,8 +342,25 @@ export class AzureOpenAIProvider implements AIProvider {
       if (result.success) return result.data;
       lastError = result.error;
     }
+    // Distinguish "the model was too slow" from "the model returned nonsense".
+    // Reported as the same ai_validation_error, they sent whoever debugged this
+    // looking at Zod schemas for a problem that was entirely about latency.
+    if (isTimeout(lastError)) {
+      throw Errors.serviceUnavailable(
+        "El servicio de IA tardó demasiado en responder. Vuelve a intentarlo en un momento.",
+        { label, cause: String(lastError) },
+      );
+    }
     throw Errors.aiValidation("La IA no devolvió una respuesta válida.", String(lastError));
   }
+}
+
+/** Whether a failure was the clock rather than the model. */
+function isTimeout(err: unknown): boolean {
+  return (
+    err instanceof OpenAI.APIConnectionTimeoutError ||
+    (err instanceof Error && /timed? ?out|aborted/i.test(err.message))
+  );
 }
 
 /**

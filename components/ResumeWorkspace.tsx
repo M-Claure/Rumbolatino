@@ -27,6 +27,10 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
   const [finalizedAt, setFinalizedAt] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const [reviewNotes, setReviewNotes] = useState<string[]>([]);
+  // Whether the cosmetic proofread pass failed on the way to finalizing. Not an
+  // error state — the résumé is finished and downloadable either way — just the
+  // difference between "we checked your spelling" and honestly not claiming so.
+  const [proofreadFailed, setProofreadFailed] = useState(false);
   const [downloading, setDownloading] = useState(false);
   // Improvement rounds completed. Server state (`funnel.iteration`), not
   // localStorage: the cap is enforced by POST /generate, so clearing site data
@@ -152,15 +156,30 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
   const reviewAndFinalize = useCallback(async () => {
     setReviewing(true);
     setError(null);
+    // The two steps are attempted SEPARATELY and a failed proofread does not stop
+    // the finalize. Chained inside one `try`, the cosmetic step gated the download:
+    // the proofread route can be killed at its 60s `maxDuration` and answer a bare
+    // 504, which left `finalizedAt` null — so the "Descargar PDF" button never
+    // rendered and /export-pdf refused the request anyway. The user was left with a
+    // finished résumé and no way to get it out of the product, and pressing the
+    // button again just re-ran the same slow call. Polish is optional; the PDF is
+    // the entire point of the product.
+    let notes: string[] = [];
+    let polished = true;
     try {
-      const { notes } = await api.proofread(profileId);
+      ({ notes } = await api.proofread(profileId));
+    } catch {
+      polished = false;
+    }
+    try {
       const { profile } = await api.finalize(profileId);
       setReviewNotes(notes);
+      setProofreadFailed(!polished);
       setFinalizedAt(profile.finalizedAt);
       setPreviewVersion((v) => v + 1); // show the corrected résumé
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo revisar el currículum.");
+      setError(err instanceof Error ? err.message : "No se pudo finalizar el currículum.");
     } finally {
       setReviewing(false);
     }
@@ -264,7 +283,10 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
       ) : (
         <div className="-mt-3 rounded-xl bg-accent-light p-3">
           <p className="text-sm text-accent-dark">
-            Revisamos tu currículum y está listo para descargar. Revisa la vista previa y pulsa <strong>Descargar PDF</strong>.
+            {proofreadFailed
+              ? "Tu currículum está listo para descargar. Esta vez no pudimos revisar la ortografía, pero tu currículum está completo."
+              : "Revisamos tu currículum y está listo para descargar."}{" "}
+            Revisa la vista previa y pulsa <strong>Descargar PDF</strong>.
           </p>
           {reviewNotes.length > 0 && (
             <ul className="mt-1 list-disc pl-5 text-xs text-accent-dark">

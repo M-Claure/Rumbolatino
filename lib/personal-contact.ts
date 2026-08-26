@@ -1,5 +1,6 @@
 /**
- * Pure helpers for a person's name and contact channels.
+ * Pure helpers for the personal_information capture: a person's name, their
+ * contact channels, and where they live.
  *
  * Two different shapes exist on purpose:
  *
@@ -70,6 +71,38 @@ export function parseFullName(raw: string): ParsedName {
     firstName: parts[0] ?? null,
     lastName: parts.length > 1 ? parts.slice(1).join(" ") : null,
   };
+}
+
+/**
+ * Parse the answer to "¿En qué ciudad y país vives?" into the three fields the
+ * résumé renderer joins back together.
+ *
+ * Deliberately positional and dumb. The renderer emits
+ * `[city, state, country].filter(Boolean).join(", ")`, so a mis-bucketed middle
+ * part costs nothing — "Miami, Florida" reads identically whether Florida landed
+ * in `state` or `country`. What matters is that the answer lands in the LOCATION
+ * fields at all: routed through `parseFullName` instead, "Miami" became the
+ * person's first name and the location was lost entirely.
+ *
+ *   "Miami"                          → city
+ *   "Miami, Estados Unidos"          → city, country
+ *   "Houston, Texas, Estados Unidos" → city, state, country
+ */
+export function parseLocationAnswer(raw: string): {
+  city: string | null;
+  state: string | null;
+  country: string | null;
+} {
+  const parts = raw
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return { city: null, state: null, country: null };
+  if (parts.length === 1) return { city: parts[0]!, state: null, country: null };
+  if (parts.length === 2) return { city: parts[0]!, state: null, country: parts[1]! };
+  // Anything beyond the third part is still part of the country name
+  // ("Ciudad de México, CDMX, Estados Unidos Mexicanos" splits oddly otherwise).
+  return { city: parts[0]!, state: parts[1]!, country: parts.slice(2).join(", ") };
 }
 
 /**

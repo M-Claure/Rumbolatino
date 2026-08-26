@@ -36,7 +36,7 @@ import {
 } from "./schemas";
 import { EXPERIENCE_TYPES, type ExperienceType } from "@/types";
 import { MAX_EXPERIENCE_ENTRIES } from "@/lib/config/limits";
-import { parsePersonalInformation } from "@/lib/personal-contact";
+import { parseLocationAnswer, parsePersonalInformation } from "@/lib/personal-contact";
 import { formatExperienceDate, parseExperienceDateRange } from "@/lib/experience-dates";
 
 /**
@@ -244,9 +244,32 @@ export class MockAIProvider implements AIProvider {
         break;
       }
       case "personal_information": {
-        const { firstName, lastName, email, phone } = parsePersonalInformation(raw);
-        updates.personalInformation = { firstName, lastName, email, phone };
-        summary = "Guardé tu información personal.";
+        // Branch on the QUESTION, not just the section — the same rule the
+        // `career_goal` and `education` cases already follow, and for the same
+        // reason: each question fills ONLY the field it actually asks about.
+        //
+        // THREE questions share this section (name, contact, location) and all of
+        // them used to run through `parsePersonalInformation`, which reads whatever
+        // is left after stripping an email/phone as a NAME. So answering "Miami" to
+        // "¿En qué ciudad y país vives?" overwrote the person's real first name,
+        // threw the location away (city/state/country were never written), and then
+        // resurfaced as the greeting the planner prefixes to every later question —
+        // "Miami, cuéntame sobre tu empleo formal". The résumé would have carried
+        // "Miami" as the person's name.
+        if (params.questionId === "personal_location") {
+          const { city, state, country } = parseLocationAnswer(raw);
+          updates.personalInformation = { city, state, country };
+          const where = [city, state, country].filter(Boolean).join(", ");
+          summary = where ? `Anoté que vives en ${where}.` : "Anoté tu ubicación.";
+        } else {
+          // `personal_contact` deliberately shares this branch: it asks for a
+          // contact channel, but people commonly type "Ana Ruiz ana@example.com"
+          // and the name in that answer is worth keeping (pinned by
+          // tests/unit/profile-contact-gate.test.ts).
+          const { firstName, lastName, email, phone } = parsePersonalInformation(raw);
+          updates.personalInformation = { firstName, lastName, email, phone };
+          summary = "Guardé tu información personal.";
+        }
         break;
       }
       case "education": {
