@@ -1,6 +1,7 @@
 import "server-only";
 import { getEnv } from "@/lib/env";
 import { AzureOpenAIProvider, type CallSpendRecorder } from "./azure-openai-provider";
+import type { RequestDeadline } from "@/lib/request-deadline";
 import { HybridAIProvider } from "./hybrid-provider";
 import { MockAIProvider } from "./mock-provider";
 import type { AIProvider } from "./provider";
@@ -37,8 +38,10 @@ let funnelCached: AIProvider | null = null;
  * The configured AI provider (Azure OpenAI when enabled, else mock). Used ONLY for
  * resume generation + analysis (end of funnel + each regenerate).
  */
-export function getAIProvider(spend?: CallSpendRecorder): AIProvider {
-  if (!spend && cached) return cached;
+export function getAIProvider(spend?: CallSpendRecorder, deadline?: RequestDeadline): AIProvider {
+  // Only the dependency-free provider is cached process-wide: one carrying a
+  // request's spend recorder or its deadline must never outlive that request.
+  if (!spend && !deadline && cached) return cached;
   const env = getEnv();
   const provider: AIProvider =
     env.AI_PROVIDER === "azure"
@@ -47,9 +50,10 @@ export function getAIProvider(spend?: CallSpendRecorder): AIProvider {
           env.AZURE_OPENAI_BASE_URL!,
           env.AZURE_OPENAI_MODEL,
           spend,
+          deadline,
         )
       : new MockAIProvider();
-  if (!spend) cached = provider;
+  if (!spend && !deadline) cached = provider;
   return provider;
 }
 
@@ -67,8 +71,8 @@ export function getAIProvider(spend?: CallSpendRecorder): AIProvider {
  * be was missing education and certifications, so the two comments described
  * different products.
  */
-export function getFunnelProvider(spend?: CallSpendRecorder): AIProvider {
-  if (!spend && funnelCached) return funnelCached;
+export function getFunnelProvider(spend?: CallSpendRecorder, deadline?: RequestDeadline): AIProvider {
+  if (!spend && !deadline && funnelCached) return funnelCached;
   const env = getEnv();
   const provider: AIProvider =
     env.AI_PROVIDER === "azure"
@@ -78,11 +82,12 @@ export function getFunnelProvider(spend?: CallSpendRecorder): AIProvider {
             env.AZURE_OPENAI_BASE_URL!,
             env.AZURE_OPENAI_MODEL,
             spend,
+            deadline,
           ),
           new MockAIProvider(),
         )
       : new MockAIProvider();
-  if (!spend) funnelCached = provider;
+  if (!spend && !deadline) funnelCached = provider;
   return provider;
 }
 

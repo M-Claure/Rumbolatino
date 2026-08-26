@@ -2,6 +2,24 @@ import type { GeneratedResume } from "@/types";
 import type { Analytics } from "@/lib/analytics";
 import type { PdfGenerator } from "@/lib/resume/pdf-generator";
 import type { ResumeFileStore, ResumeRowUpdater } from "@/lib/storage/resume-file-store";
+import { UNLIMITED_DEADLINE, type RequestDeadline } from "@/lib/request-deadline";
+
+/**
+ * What a render is expected to cost, so the writer can tell whether it fits in
+ * what is left of the invocation.
+ *
+ * The gap between the two is Chromium itself: `@sparticuz/chromium` ships a
+ * Brotli-compressed browser that has to be expanded into /tmp and launched once
+ * per instance, and only once. A warm instance reuses both. Estimates rather than
+ * measurements on purpose — the decision only needs to be right about the order
+ * of magnitude, and being wrong costs a skipped PDF that the download path
+ * re-renders anyway.
+ */
+const PDF_COLD_MS = 20_000;
+const PDF_WARM_MS = 6_000;
+
+/** Per-instance, matching the granularity of the Chromium extraction it tracks. */
+let renderedInThisProcess = false;
 
 /**
  * Side-effects that run when a new résumé version is persisted.
@@ -33,6 +51,12 @@ export interface ResumePdfWriterDeps {
   pdf: PdfGenerator;
   files: ResumeFileStore;
   analytics?: Analytics;
+  /**
+   * This invocation's remaining wall-clock budget. Optional so unit tests and any
+   * non-serverless caller keep working unchanged; supplied by `getRequestContext`
+   * in production.
+   */
+  deadline?: RequestDeadline;
 }
 
 /**
@@ -48,7 +72,7 @@ export interface ResumePdfWriterDeps {
  * top of a generation that already spends far longer in the model.
  */
 export function createResumePdfWriter(deps: ResumePdfWriterDeps): ResumeArtifactWriter {
-  const { userId, store, pdf, files, analytics } = deps;
+  const { userId, store, pdf, files, analytics, deadline = UNLIMITED_DEADLINE } = deps;
 
   return {
     async onResumeCreated(resume: GeneratedResume): Promise<GeneratedResume> {
@@ -56,8 +80,38 @@ export function createResumePdfWriter(deps: ResumePdfWriterDeps): ResumeArtifact
       // overwrite a good PDF with it.
       if (!resume.html.trim()) return resume;
 
+      /*
+       * Skip rather than run out of road. This is the LAST step of a generation:
+       * the model call is paid for, the résumé is already saved, and the only
+       * thing still at risk is the response itself. Starting a Chromium cold
+       * start with ten seconds left does not produce a PDF — it produces a 504,
+       * which loses the response to a résumé that already exists and sends the
+       * user back to press the button again.
+       *
+       * A skipped PDF costs nothing durable: the writer is best-effort by
+       * contract, and `POST /export-pdf` re-renders and back-fills on the first
+       * download, so the profile self-heals. Between "no PDF cached" and "no
+       * response at all", the former is not close.
+       */
+      const needMs = renderedInThisProcess ? PDF_WARM_MS : PDF_COLD_MS;
+      const leftMs = deadline.remainingMs();
+      if (leftMs < needMs) {
+        console.warn(
+          `[resume-artifacts] skipping PDF for profile ${resume.resumeProfileId} ` +
+            `(version ${resume.version}, round ${resume.stage}): ${leftMs}ms left, ` +
+            `~${needMs}ms needed. The download path will render and back-fill it.`,
+        );
+        analytics?.track(
+          "resume_pdf_skipped",
+          { resumeProfileId: resume.resumeProfileId, version: resume.version },
+          userId,
+        );
+        return resume;
+      }
+
       try {
         const bytes = await pdf.generate(resume.html);
+        renderedInThisProcess = true;
         const path = await files.putResumePdf({
           userId,
           profileId: resume.resumeProfileId,

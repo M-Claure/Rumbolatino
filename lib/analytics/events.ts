@@ -33,6 +33,13 @@ export const ANALYTICS_EVENTS = [
    * this and `resume_generated` is the PDF save-failure rate.
    */
   "resume_pdf_stored",
+  /**
+   * The render was skipped because the invocation was about to run out of wall
+   * clock — see `lib/resume/resume-artifacts.ts`. Deliberately distinct from a
+   * failed save: nothing went wrong, the work was deferred to the download path.
+   * A rising rate here means generations are running close to `maxDuration`.
+   */
+  "resume_pdf_skipped",
   "pdf_export_started",
   "resume_downloaded",
   "funnel_abandoned",

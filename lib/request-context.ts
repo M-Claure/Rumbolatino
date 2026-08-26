@@ -11,6 +11,7 @@ import { createCallSpendRecorder } from "@/lib/spend/recorder";
 import { getPdfGenerator } from "@/lib/resume/pdf-generator";
 import { createResumePdfWriter, type ResumeArtifactWriter } from "@/lib/resume/resume-artifacts";
 import { resolveUserEmail, resolveUserId } from "@/lib/auth";
+import { startRequestDeadline } from "@/lib/request-deadline";
 
 export interface RequestContext {
   userId: string;
@@ -43,6 +44,14 @@ export interface RequestContext {
  *   before any call can happen.
  */
 export async function getRequestContext(resumeProfileId?: string): Promise<RequestContext> {
+  /*
+   * Started FIRST, before the auth round trip below, so the clock covers the whole
+   * handler and not just the part after the context exists. The two expensive
+   * steps of a generation — the model call and the Chromium render — then read the
+   * same countdown, which is what stops either of them from spending budget the
+   * other needed. See `lib/request-deadline.ts`.
+   */
+  const deadline = startRequestDeadline();
   const userId = await resolveUserId();
   if (!userId) throw Errors.unauthorized();
 
@@ -71,8 +80,8 @@ export async function getRequestContext(resumeProfileId?: string): Promise<Reque
   return {
     userId,
     store,
-    ai: getAIProvider(spend),
-    funnelAi: getFunnelProvider(spend),
+    ai: getAIProvider(spend, deadline),
+    funnelAi: getFunnelProvider(spend, deadline),
     analytics,
     resumeFiles,
     resumeArtifacts: createResumePdfWriter({
@@ -81,6 +90,7 @@ export async function getRequestContext(resumeProfileId?: string): Promise<Reque
       pdf: getPdfGenerator(),
       files: resumeFiles,
       analytics,
+      deadline,
     }),
   };
 }
