@@ -911,6 +911,12 @@ npm run typecheck          # tsc --noEmit
 npm test                   # unit tests (vitest)
 npm run test:e2e           # e2e tests (playwright; builds + starts the app)
 npm run lint               # next lint
+
+npm run resume:list        # what résumés exist in the Supabase project
+npm run resume:delete      # delete one, picked from a numbered list — the funnel
+                           # row cascades, but the bucket's PDFs and the ai_spend
+                           # rows do not, so it removes those explicitly.
+                           # See docs/deleting-resumes.md
 ```
 
 **Online-only:** this app cannot run offline. `AI_PROVIDER=mock` and
