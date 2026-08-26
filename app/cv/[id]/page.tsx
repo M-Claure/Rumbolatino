@@ -4,6 +4,17 @@ import { useCallback, useEffect, useState } from "react";
 import type { AdaptiveQuestion } from "@/lib/ai/schemas";
 import type { ResumeProfileState } from "@/types";
 import { api, type AnswerPayload } from "@/lib/client/api";
+import {
+  EMPTY_TRAIL,
+  canAdvanceWithoutSending,
+  canGoBack,
+  currentStep,
+  recordAnswer,
+  startTrail,
+  stepBack,
+  type AnswerSent,
+  type FunnelTrail,
+} from "@/lib/client/funnel-trail";
 import { InstructionBanner, ProgressBar, Spinner } from "@/components/primitives";
 import { QuestionCard } from "@/components/QuestionCard";
 import { SkillConfirm } from "@/components/SkillConfirm";
@@ -43,17 +54,17 @@ export default function CvFlowPage({ params }: { params: { id: string } }) {
   const profileId = params.id;
 
   const [phase, setPhase] = useState<Phase>("loading");
-  const [question, setQuestion] = useState<AdaptiveQuestion | null>(null);
   const [state, setState] = useState<ResumeProfileState | null>(null);
   const [interpretation, setInterpretation] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
-  // Client-side history of questions shown (with the entry each produced), so the
-  // user can step back and re-answer — overwriting that entry instead of adding.
-  const [history, setHistory] = useState<{ question: AdaptiveQuestion; affectedEntryId: string | null }[]>([]);
-  // When set, the current answer overwrites this entry (we backed into it).
-  const [targetEntryId, setTargetEntryId] = useState<string | undefined>(undefined);
+
+  // Where the person is in the walk. All the movement rules — and the reasons
+  // for them — live in `lib/client/funnel-trail.ts`, which is pure and tested.
+  const [trail, setTrail] = useState<FunnelTrail>(EMPTY_TRAIL);
+  const step = currentStep(trail);
+  const question = step?.question ?? null;
 
   /**
    * `fatal` replaces the whole screen — only correct when there is nothing to
@@ -84,6 +95,10 @@ export default function CvFlowPage({ params }: { params: { id: string } }) {
    * The cost is one extra read before the first question, on mount only. Planning
    * the question first instead would be cheaper but records it as SHOWN
    * (`funnel-telemetry`), inflating the exit rate of a question nobody ever saw.
+   *
+   * The trail starts here, one step long: it lives in the browser, so someone
+   * resuming a funnel opens with nothing behind them and no "← Volver" — the
+   * answers are all still on the server, reachable from the Review screen.
    */
   useEffect(() => {
     let cancelled = false;
@@ -97,7 +112,7 @@ export default function CvFlowPage({ params }: { params: { id: string } }) {
         }
         const res = await api.nextQuestion(profileId);
         if (cancelled) return;
-        setQuestion(res.nextQuestion);
+        setTrail(startTrail(res.nextQuestion));
         setState(res.state);
         setPhase("asking");
         setStartedAt(Date.now());
@@ -111,58 +126,70 @@ export default function CvFlowPage({ params }: { params: { id: string } }) {
     };
   }, [profileId, handleError]);
 
-  const applyResult = useCallback(
-    (res: Awaited<ReturnType<typeof api.submitAnswer>>) => {
-      // Remember the question we're leaving + the entry it produced.
-      setHistory((h) => (question ? [...h, { question, affectedEntryId: res.affectedEntryId }] : h));
-      setState(res.state);
-      setQuestion(res.nextQuestion);
-      setInterpretation(res.interpretation?.summary ?? null);
+  const advance = useCallback(
+    (sent: AnswerSent, res: Awaited<ReturnType<typeof api.submitAnswer>> | null) => {
+      setTrail((t) =>
+        recordAnswer(
+          t,
+          sent,
+          res ? { affectedEntryId: res.affectedEntryId, nextQuestion: res.nextQuestion } : null,
+        ),
+      );
+      setInterpretation(res?.interpretation?.summary ?? null);
       setError(null);
-      setTargetEntryId(undefined); // moving forward creates fresh entries
       setStartedAt(Date.now());
       window.scrollTo({ top: 0, behavior: "smooth" });
     },
-    [question],
+    [],
   );
 
   const goBack = useCallback(() => {
-    setHistory((h) => {
-      if (h.length === 0) return h;
-      const prev = h[h.length - 1]!;
-      setQuestion(prev.question);
-      // Re-answering this question overwrites the entry it originally created.
-      setTargetEntryId(prev.affectedEntryId ?? undefined);
-      setInterpretation(null);
-      setError(null);
-      setStartedAt(Date.now());
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return h.slice(0, -1);
-    });
+    setTrail(stepBack);
+    setInterpretation(null);
+    setError(null);
+    setStartedAt(Date.now());
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
   const send = useCallback(
     async (payload: Omit<AnswerPayload, "questionId" | "section">) => {
-      if (!question) return;
+      const current = currentStep(trail);
+      if (!current) return;
+      const skipped = payload.skipped === true;
+      const answer = skipped ? null : (payload.rawAnswer ?? null);
+      const sent: AnswerSent = { answer, skipped };
+
+      // An unchanged answer is already saved — just move on. Skill decisions are
+      // exempt: they carry ids, not text, so "unchanged" cannot be read off the
+      // payload.
+      if (!payload.skillDecisions && canAdvanceWithoutSending(trail, sent)) {
+        advance(sent, null);
+        return;
+      }
+
       setBusy(true);
       setError(null);
       try {
         const res = await api.submitAnswer(profileId, {
-          questionId: question.questionId,
-          section: question.section,
+          questionId: current.question.questionId,
+          section: current.question.section,
           timeSpentMs: startedAt ? Date.now() - startedAt : undefined,
           deviceCategory: deviceCategory(),
-          targetEntryId,
+          // Set once this step has produced an entry, so re-answering it EDITS
+          // that entry. Undefined the first time through, which is what lets the
+          // answer create one.
+          targetEntryId: current.entryId ?? undefined,
           ...payload,
         });
-        applyResult(res);
+        setState(res.state);
+        advance(sent, res);
       } catch (err) {
         handleError(err);
       } finally {
         setBusy(false);
       }
     },
-    [question, profileId, startedAt, targetEntryId, applyResult, handleError],
+    [trail, profileId, startedAt, advance, handleError],
   );
 
   const generate = useCallback(async () => {
@@ -229,7 +256,7 @@ export default function CvFlowPage({ params }: { params: { id: string } }) {
         </InstructionBanner>
       )}
 
-      {history.length > 0 && (
+      {canGoBack(trail) && (
         <button
           type="button"
           onClick={goBack}
@@ -265,12 +292,20 @@ export default function CvFlowPage({ params }: { params: { id: string } }) {
       )}
 
       <div data-qid={question?.questionId ?? "none"}>
-      {question &&
+      {/*
+        Keyed by POSITION in the trail, never by questionId.
+        `experience_add` is asked once per experience, so a questionId key left
+        React reusing one card across all of them — and with it the text already
+        typed, which is how experience 1's answer turned up prefilled in
+        experience 2. A position key remounts the card on every move, and
+        `initialAnswer` puts back what belongs to THIS step.
+      */}
+      {question && step &&
         (question.inputType === "review" || question.nextAction === "review_profile" ? (
           <EditableReview profileId={profileId} onGenerate={generate} busy={busy} explainNext />
         ) : question.inputType === "skill_confirmation" ? (
           <SkillConfirm
-            key={question.questionId}
+            key={trail.cursor}
             question={question}
             suggestedSkills={state?.suggestedSkills ?? []}
             onSubmit={(decisions) => send({ skillDecisions: decisions })}
@@ -278,8 +313,9 @@ export default function CvFlowPage({ params }: { params: { id: string } }) {
           />
         ) : (
           <QuestionCard
-            key={question.questionId}
+            key={trail.cursor}
             question={question}
+            initialAnswer={step.sent?.answer ?? null}
             onSubmit={(rawAnswer) => send({ rawAnswer })}
             onSkip={() => send({ skipped: true })}
             busy={busy}

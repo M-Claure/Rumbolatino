@@ -1,15 +1,23 @@
 /**
- * Deterministic question prioritization (spec §7). Produces the ordered set of
- * catalog questions the AI planner is allowed to choose from. The prioritizer —
- * not the model — enforces:
- *   - never re-ask an answered question (unless it is repeatable),
- *   - a skipped question is not re-asked immediately (only if it is critical for
- *     generation and the profile is not yet ready),
- *   - once the profile is ready, stop exploring and steer toward review.
+ * Deterministic question selection (spec §7).
+ *
+ * The funnel walks `FUNNEL_SCRIPT` (`./question-catalog.ts`) in order and asks the
+ * first step that is still eligible. Nothing reorders it: not the completeness
+ * ladder, not the model, not a per-question priority number. Two people who give
+ * the same answers are asked the same questions in the same order.
+ *
+ * What this module still decides is ELIGIBILITY — the rules that let the script
+ * skip a step rather than reorder it:
+ *   - a question whose precondition is false is not asked (already answered in
+ *     substance, or not applicable),
+ *   - an answered question is not re-asked unless it is repeatable
+ *     (`experience_add` walks one entry per loop),
+ *   - a skipped question is not re-asked, unless it is critical for generation
+ *     and the profile is still not ready.
  */
 import type { ResumeProfileState } from "@/types";
 import type { QuestionCandidate } from "@/lib/ai/provider";
-import { QUESTION_CATALOG, getCatalogQuestion, type CatalogQuestion } from "./question-catalog";
+import { FUNNEL_SCRIPT, getCatalogQuestion, type CatalogQuestion } from "./question-catalog";
 
 const MAX_CANDIDATES = 6;
 
@@ -20,57 +28,39 @@ export function buildCandidates(state: ResumeProfileState): QuestionCandidate[] 
 }
 
 /**
- * Every catalog question the funnel would still consider asking, in priority
- * order and NOT truncated to `MAX_CANDIDATES`.
+ * Every funnel step still outstanding, in script order and NOT truncated to
+ * `MAX_CANDIDATES`.
  *
- * `buildCandidates` slices this down to what the planner is offered; the full
- * list is what "how much is left?" has to be measured against, which is why the
- * two are separated (`lib/question-engine/funnel-progress.ts`). Reusing one pool
- * for both is the point: a progress bar computed from a different eligibility
- * rule than the one the funnel actually follows would drift from what the user
- * is asked.
+ * `buildCandidates` slices this down to what the planner is shown; the full list
+ * is what "how much is left?" has to be measured against, which is why the two
+ * are separated (`lib/question-engine/funnel-progress.ts`). Reusing one pool for
+ * both is the point: a progress bar computed from a different eligibility rule
+ * than the one the funnel actually follows would drift from what the user is
+ * asked.
+ *
+ * The head of this list is the next question. `adaptive-planner.ts` takes it
+ * without asking the model which one to use.
  */
 export function eligibleQuestions(state: ResumeProfileState): CatalogQuestion[] {
   const answered = new Set(state.answeredQuestionIds);
   const skipped = new Set(state.skippedQuestionIds);
   const ready = state.completeness.readyToGenerate;
-  const recommended = state.completeness.recommendedSection;
 
-  const eligible = QUESTION_CATALOG.filter((q) => {
-    if (!q.precondition(state)) return false;
-    if (answered.has(q.id) && !q.repeatable) return false;
+  const out: CatalogQuestion[] = [];
+  for (const id of FUNNEL_SCRIPT) {
+    const q = getCatalogQuestion(id);
+    // A script id with no catalog entry is a bug, pinned by tests/unit/funnel-script.test.ts.
+    if (!q) continue;
+    if (!q.precondition(state)) continue;
+    if (answered.has(q.id) && !q.repeatable) continue;
     if (skipped.has(q.id)) {
       // Skipped questions come back only if critical AND still blocking readiness.
       const revisit = q.criticalForGeneration === true && !ready;
-      if (!revisit) return false;
+      if (!revisit) continue;
     }
-    return true;
-  });
-
-  // Once ready, drop repeatable "add another…" questions so the flow converges
-  // on review instead of letting the planner keep re-picking them.
-  const converged = ready ? eligible.filter((q) => !q.repeatable) : eligible;
-
-  // When the profile is ready, don't keep exploring optional sections.
-  const pool = ready ? preferReview(converged) : converged;
-
-  return [...pool].sort((a, b) => {
-    const aRec = a.section === recommended ? 0 : 1;
-    const bRec = b.section === recommended ? 0 : 1;
-    if (aRec !== bRec) return aRec - bRec;
-    return a.priority - b.priority;
-  });
-}
-
-/** Ensure the review question leads and trim exploratory questions. */
-function preferReview(eligible: CatalogQuestion[]): CatalogQuestion[] {
-  const review = getCatalogQuestion("review_summary");
-  const withoutOptional = eligible.filter(
-    (q) => q.criticalForGeneration || q.section === "review" || q.section === "skills",
-  );
-  const base = withoutOptional.length > 0 ? withoutOptional : eligible;
-  if (review && !base.some((q) => q.id === "review_summary")) return [review, ...base];
-  return base;
+    out.push(q);
+  }
+  return out;
 }
 
 function toCandidate(q: CatalogQuestion, state: ResumeProfileState): QuestionCandidate {

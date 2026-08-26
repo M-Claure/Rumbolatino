@@ -185,9 +185,18 @@ export class MockAIProvider implements AIProvider {
   readonly name = "mock";
 
   async planNextQuestion(params: PlanQuestionParams): Promise<PlannerDecision> {
-    const { candidates, recommendedSection, state } = params;
-    const chosen =
-      candidates.find((c) => c.section === recommendedSection) ?? candidates[0] ?? null;
+    const { candidates, state } = params;
+    /*
+     * The FIRST candidate, always — it is the next step of `FUNNEL_SCRIPT`, and
+     * the planner pins to it anyway, so returning any other one would only throw
+     * away this provider's personalization.
+     *
+     * This used to prefer `recommendedSection`, which is how a completeness
+     * ladder recomputed after every answer ended up choosing the order of the
+     * funnel. `recommendedSection` is still in `params` for the model-backed
+     * provider's prompt; it is no longer allowed to pick.
+     */
+    const chosen = candidates[0] ?? null;
 
     if (!chosen) {
       // Nothing left to ask — steer toward review/generation.

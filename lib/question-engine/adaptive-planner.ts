@@ -1,14 +1,23 @@
 /**
- * Adaptive question planner (spec §6 Layer 2, §8).
+ * Question planner (spec §6 Layer 2, §8).
  *
- * The deterministic prioritizer decides WHAT is eligible; the model only PICKS
- * and personalizes from that set. This module:
- *   1. builds candidates deterministically,
- *   2. asks the provider to choose + personalize (validated PlannerDecision),
- *   3. re-checks questionId ∈ candidates (defense beyond Zod),
- *   4. fills inputType/options/required/allowSkip/nextAction from the CATALOG,
+ * WHICH question comes next is not a decision made here, and not one the model
+ * makes: it is the head of `eligibleQuestions`, which walks `FUNNEL_SCRIPT` in
+ * order. The provider is asked only to REWORD that question — greet the person by
+ * name, adapt the phrasing to what they already told us — and even that is
+ * discarded unless it came back about the same question.
+ *
+ * Letting the model pick from the candidate list is what made the funnel wander:
+ * the choice was re-made from scratch on every answer, so the order emerged from
+ * six ranked options rather than from a script anyone had read.
+ *
+ * So:
+ *   1. build the outstanding steps deterministically,
+ *   2. PIN the next question to the first one,
+ *   3. ask the provider to personalize its wording (validated PlannerDecision),
+ *   4. fill inputType/options/required/allowSkip/nextAction from the CATALOG,
  *      never from the model,
- *   5. returns a strict AdaptiveQuestion.
+ *   5. return a strict AdaptiveQuestion.
  */
 import type { ResumeProfileState } from "@/types";
 import type { AIProvider } from "@/lib/ai";
@@ -39,17 +48,17 @@ export async function planNextQuestion(
     });
   }
 
-  const candidateIds = new Set(candidates.map((c) => c.questionId));
+  // The next question IS the first outstanding step of the script. The provider
+  // never gets to change that.
+  const candidate = candidates[0]!;
+  const chosenId = candidate.questionId;
+  const catalog = getCatalogQuestion(chosenId);
+
   const decision = await provider.planNextQuestion({
     state,
     candidates,
     recommendedSection: state.completeness.recommendedSection,
   });
-
-  // Enforce that the model chose an allowed question; otherwise use the top one.
-  const chosenId = candidateIds.has(decision.questionId) ? decision.questionId : candidates[0]!.questionId;
-  const catalog = getCatalogQuestion(chosenId);
-  const candidate = candidates.find((c) => c.questionId === chosenId)!;
 
   const inputType = catalog?.inputType ?? candidate.inputType;
   const nextAction = deriveNextAction(inputType, candidate.section);
@@ -66,7 +75,9 @@ export async function planNextQuestion(
   return AdaptiveQuestionSchema.parse({
     questionId: chosenId,
     section: candidate.section,
-    questionText: chosenId === decision.questionId ? decision.questionText : candidate.defaultText,
+    // Personalized wording is kept only when it is wording for THIS question; a
+    // decision about any other one is answering a question we are not asking.
+    questionText: decision.questionId === chosenId ? decision.questionText : candidate.defaultText,
     supportingText: decision.supportingText ?? catalog?.supportingText,
     reasonForAsking: decision.reasonForAsking ?? catalog?.intent,
     exampleAnswer: decision.exampleAnswer ?? catalog?.exampleAnswer,

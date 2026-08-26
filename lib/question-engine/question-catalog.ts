@@ -1,11 +1,19 @@
 /**
  * Deterministic catalog of questions in Spanish (spec §16).
  *
- * The AI planner CHOOSES and personalizes a question from this catalog; it does
- * not invent questions from scratch. Each entry declares:
+ * The funnel asks questions from this catalog and nowhere else; the model never
+ * invents one, and no longer chooses between them either — it only rewords the
+ * one already decided. Each entry declares:
  *  - preconditions: when the question is eligible (pure predicate over state),
- *  - completionEffect: what fields it fills (documentation + analytics),
- *  - priority: lower = earlier in the flow.
+ *  - completionEffect: what fields it fills (documentation + analytics).
+ *
+ * The ORDER of this array carries no meaning. The funnel walks `FUNNEL_SCRIPT`
+ * below — the single source of truth for what is asked and in what order. A
+ * catalog entry that is not in the script is never asked by the funnel; it is
+ * kept because the improvement loop (`FOLLOWUP_DEFS` in
+ * `lib/resume/resume-analyzer.ts`), the entry deep-dives and the Review screen's
+ * back-edit all answer through the same pipeline and need its text, input type
+ * and charLimit.
  */
 import type { ResumeProfileState, ResumeSection } from "@/types";
 import type { InputType } from "@/lib/ai/schemas";
@@ -45,8 +53,6 @@ export interface CatalogQuestion {
   /** Eligible only when this returns true. */
   precondition: (s: ResumeProfileState) => boolean;
   completionEffect: string[];
-  /** Lower runs earlier. */
-  priority: number;
   /** May be asked more than once (e.g. "add another experience"). */
   repeatable?: boolean;
   /** When true this question is critical for generating the resume — it may be
@@ -152,6 +158,99 @@ const describeExperienceText = (s: ResumeProfileState): string => {
 const educationMissingDates = (s: ResumeProfileState) =>
   s.education.some((e) => !has(e.endDate) && !e.isCurrent);
 
+/**
+ * THE FUNNEL, in order. This array — not a per-question `priority`, not the
+ * completeness engine's `recommendedSection`, not the model — decides what is
+ * asked and when.
+ *
+ * ## Why it is a literal list
+ * Ordering used to be emergent: the prioritizer sorted the whole catalog by a
+ * numeric `priority`, then hoisted every question whose section matched
+ * `completeness.recommendedSection`, and the planner picked one of the top six.
+ * `recommendedSection` is a ladder recomputed after every answer, so the hoist
+ * moved mid-funnel: describing two experiences made the ladder fall through to
+ * another section, and the person was asked where they live and about studies
+ * they had already said they did not have — then dropped back into experience 3
+ * and 4. Every input to that was individually reasonable; the ORDER was nobody's
+ * decision. A funnel people walk through in one sitting has to be readable as a
+ * script, so it is written as one.
+ *
+ * ## The script
+ *  1. name, contact, then postal code — who the person is and where they are
+ *  2. the job being sought, which every later answer is framed against
+ *  3. one short education question
+ *  4. how many experiences there are, which sizes the loop that follows
+ *  5. the skills the person names themselves
+ *  6. one description per experience (`experience_add` repeats, walking the
+ *     entries the counter created, until none is left undescribed)
+ *  7. review
+ *
+ * ## Rules
+ * - An id here MUST exist in `QUESTION_CATALOG`; `tests/unit/funnel-script.test.ts`
+ *   pins that, and pins this order.
+ * - A question earns its place by being needed to WRITE the résumé. Everything
+ *   that only IMPROVES one is asked after the first PDF exists, by the
+ *   improvement loop, where the person can see what it buys them and the analyzer
+ *   asks only for what that particular résumé is short of. So the absences are
+ *   deliberate, not oversights: the experience deep-dives
+ *   (dates, daily tasks, scope, results), `education_details` — and the four
+ *   optional sections (`certifications_any`, `languages_any`, `projects_any`,
+ *   `achievements_any`), which used to be appended after the experience loop.
+ *   Four "¿tienes…?" questions in a row, answered "No tengo" four times, is a
+ *   bad last impression of a funnel someone has almost finished; the analyzer
+ *   asks the same things later, and only when they would help.
+ * - `completeness.recommendedSection` no longer reorders anything. It survives
+ *   for the review dashboard and the model prompt, which is what it is good at.
+ */
+export const FUNNEL_SCRIPT: readonly string[] = [
+  // 1 — who you are.
+  "personal_name",
+  "personal_contact",
+  /*
+   * RUMBO LATINO ONLY, and load-bearing rather than a nicety.
+   *
+   * The sibling product (aicv) drops this step: there it asks for a city, the
+   * résumé is no worse without one, and it was one of the questions that used to
+   * appear mid-experience-loop. Here the answer is a POSTAL CODE, it is the only
+   * answer that yields coordinates, and those coordinates are what let employers
+   * find someone by how close they are (the talent directory) — plus the city
+   * and state printed on the résumé are looked up from it. So by the rule below
+   * it earns its place: the résumé cannot be written without it.
+   *
+   * It sits with the other identity questions and NOT after the experience loop,
+   * which is the part of the old behaviour that was actually wrong.
+   */
+  "personal_location",
+  // 2 — what you are aiming for. `career_goal_unknown` only fires when the answer
+  // above named no puesto at all, so it reads as a follow-up, never a repeat.
+  "career_goal_target",
+  "career_goal_unknown",
+  // 3 — education, one question, skippable with "No estudié".
+  "education_highest",
+  // 4 — how many experiences, and of what kind. Creates one entry per experience.
+  "experience_type_counts",
+  // 5 — the skills the person claims for themselves. Deliberately before the
+  // experience loop: it is the one place a confirmed skill enters the funnel, and
+  // asking it early means nobody reaches review with an empty Habilidades list
+  // because they ran out of patience three experiences in.
+  "skills_add",
+  // 6 — one description per experience, in the order they were counted.
+  "experience_add",
+  // 7 — the review screen. The experience loop ends the funnel; nothing is
+  // appended to it. Certificates, languages, projects and achievements are NOT
+  // asked here (see the note below).
+  "review_summary",
+];
+
+/**
+ * Position of a question in the funnel, or `undefined` when it is not part of it
+ * (an improvement-loop follow-up, a deep-dive, a back-edit).
+ */
+export function funnelStepIndex(id: string): number | undefined {
+  const i = FUNNEL_SCRIPT.indexOf(id);
+  return i === -1 ? undefined : i;
+}
+
 export const QUESTION_CATALOG: CatalogQuestion[] = [
   // ── Career goal ──
   {
@@ -166,7 +265,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 80, // un puesto: "Auxiliar de cocina y repostería" (31)
     precondition: (s) => !hasObjective(s),
     completionEffect: ["careerGoal", "targetRole"],
-    priority: 10,
     criticalForGeneration: true,
   },
   {
@@ -181,7 +279,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 300, // narrativo; tope de updates.careerGoal en el esquema de IA
     precondition: (s) => !hasObjective(s),
     completionEffect: ["careerGoal"],
-    priority: 11,
   },
 
   // ── Personal information ──
@@ -197,7 +294,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 70, // "María del Carmen Rodríguez Hernández" (36)
     precondition: (s) => !hasName(s),
     completionEffect: ["firstName", "lastName"],
-    priority: 20,
     criticalForGeneration: true,
   },
   {
@@ -212,7 +308,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 80, // un correo largo o un teléfono con lada
     precondition: (s) => !hasContact(s),
     completionEffect: ["email", "phone"],
-    priority: 21,
     criticalForGeneration: true,
   },
   {
@@ -234,7 +329,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 60,
     precondition: (s) => hasName(s) && !hasLocation(s),
     completionEffect: ["postalCode", "city", "state"],
-    priority: 22,
   },
 
   // ── Education ──
@@ -259,7 +353,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 200, // el nivel, con espacio para explicarlo con sus palabras
     precondition: (s) => s.education.length === 0,
     completionEffect: ["education"],
-    priority: 30,
   },
   {
     id: "education_details",
@@ -272,7 +365,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 400, // dónde estudió y qué aprendió
     precondition: (s) => s.education.some((e) => !has(e.institution) || e.relevantCoursework.length === 0),
     completionEffect: ["institution", "relevantCoursework"],
-    priority: 31,
   },
   {
     id: "education_dates",
@@ -285,7 +377,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 40, // "2021" o "junio de 2019"
     precondition: (s) => s.education.length > 0 && educationMissingDates(s),
     completionEffect: ["endDate"],
-    priority: 32,
   },
 
   // ── Experience ──
@@ -305,7 +396,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 400, // payload JSON de conteos, no lo teclea la persona
     precondition: (s) => s.experience.length === 0,
     completionEffect: ["experienceType"],
-    priority: 40,
     criticalForGeneration: true,
   },
   {
@@ -325,7 +415,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
       experienceMissingResponsibilities(s) ||
       (s.experience.length === 0 && !declaredExperienceCounts(s)),
     completionEffect: ["experience"],
-    priority: 41,
     repeatable: true,
   },
   {
@@ -339,7 +428,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 500, // lista de tareas de un día normal
     precondition: (s) => s.experience.length > 0 && experienceMissingResponsibilities(s),
     completionEffect: ["responsibilities"],
-    priority: 42,
   },
   {
     id: "experience_scope",
@@ -352,7 +440,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 400, // dinero, clientes, inventario, supervisión
     precondition: (s) => latestMissingTools(s) || latestMissingPeople(s),
     completionEffect: ["tools", "peopleServed"],
-    priority: 43,
   },
   {
     id: "experience_results",
@@ -365,7 +452,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 400, // resultados o logros con cantidades
     precondition: (s) => latestMissingResults(s),
     completionEffect: ["accomplishments", "metrics"],
-    priority: 44,
   },
   {
     id: "experience_dates",
@@ -382,7 +468,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 60, // "de marzo 2020 a la actualidad" (29)
     precondition: (s) => experienceMissingDates(s),
     completionEffect: ["startDate", "endDate"],
-    priority: 45,
     repeatable: true,
   },
 
@@ -398,7 +483,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 200, // sin texto libre: decide con botones
     precondition: (s) => s.suggestedSkills.length > 0,
     completionEffect: ["confirmedSkills"],
-    priority: 50,
     criticalForGeneration: true,
   },
   {
@@ -415,9 +499,13 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 300, // varias habilidades separadas por comas
     // Asked at most once — the answer accepts a comma-separated list, so there's
     // no need to repeat it (repeating caused a loop with the LLM planner).
-    precondition: (s) => hasBackground(s),
+    //
+    // No precondition: this is step 5 of the script and the only place a
+    // confirmed skill enters the funnel, so it must fire even for someone with no
+    // education and no experience counted — exactly the person the gate used to
+    // exclude, and the one most likely to reach review unable to generate.
+    precondition: () => true,
     completionEffect: ["confirmedSkills"],
-    priority: 51,
   },
 
   // ── Certifications / Languages / Projects / Achievements (optional) ──
@@ -433,7 +521,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 400, // varios certificados con emisor y año
     precondition: (s) => s.certifications.length === 0 && hasBackground(s),
     completionEffect: ["certifications"],
-    priority: 60,
   },
   {
     id: "languages_any",
@@ -447,7 +534,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 200, // "Español nativo, inglés intermedio" (33)
     precondition: (s) => s.languages.length === 0 && hasBackground(s),
     completionEffect: ["languages"],
-    priority: 61,
   },
   {
     id: "projects_any",
@@ -461,7 +547,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 500, // descripción de un proyecto
     precondition: (s) => s.projects.length === 0 && hasBackground(s),
     completionEffect: ["projects"],
-    priority: 62,
   },
   {
     id: "achievements_any",
@@ -475,7 +560,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 400, // un logro o reconocimiento
     precondition: (s) => s.achievements.length === 0 && hasBackground(s),
     completionEffect: ["achievements"],
-    priority: 63,
   },
 
   // ── Review ──
@@ -490,7 +574,6 @@ export const QUESTION_CATALOG: CatalogQuestion[] = [
     charLimit: 200, // sin texto libre: pantalla de repaso
     precondition: (s) => s.completeness.readyToGenerate,
     completionEffect: [],
-    priority: 90,
   },
 ];
 

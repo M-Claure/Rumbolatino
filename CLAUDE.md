@@ -67,12 +67,108 @@ dashboard, and the model prompt.
 (write side, once per answer in the pipeline) guarantees at least a point of
 movement, so the bar is monotone and never parks.
 
-**Two-layer questioning:**
-1. `completeness-engine.ts` (deterministic, no LLM) decides *which* sections/fields
-   are eligible and computes the `CompletenessReport` + readiness.
-2. `adaptive-planner.ts` picks and personalizes a question from catalog-derived
-   candidates. `questionId`, `inputType`, `required`, `allowSkip`, and
-   `nextAction` come from the **catalog**, never the model.
+**The funnel is a SCRIPT.** `FUNNEL_SCRIPT` (`lib/question-engine/question-catalog.ts`)
+is a literal ordered list of question ids and it is the only thing that decides
+what is asked and when: name → contact → **postal code** → the job being sought
+→ one education question → how many experiences → the skills the person names →
+one description per experience → review. The experience loop ends the funnel; nothing is appended
+after it. `question-prioritizer.ts` walks it
+and returns the first step still *eligible*; `adaptive-planner.ts` pins the next
+question to that step and asks the provider only to REWORD it. `questionId`,
+`inputType`, `required`, `allowSkip` and `nextAction` come from the **catalog**,
+never the model, and a `PlannerDecision` naming any other question is discarded.
+
+Order used to be emergent — a per-question `priority`, plus a hoist of every
+question whose section matched `completeness.recommendedSection`, plus the
+planner picking one of the top six candidates. `recommendedSection` is a ladder
+recomputed after **every** answer, so the hoist moved mid-funnel: describing two
+experiences dropped the ladder into another section and the person was asked
+where they lived and about studies they had already declined, then returned to
+experience 3 and 4. Every input was individually reasonable and the ORDER was
+nobody's decision. Hence: no `priority` field, no section hoist, one list you can
+read top to bottom. `tests/unit/funnel-script.test.ts` pins both the list and the
+walk.
+
+What is still *derived*, because it is about the data and not the order:
+1. `completeness-engine.ts` (deterministic, no LLM) computes the
+   `CompletenessReport` + readiness, which gate a step's `precondition`, the
+   review dashboard and the model prompt. `recommendedSection` survives for those
+   two readers and no longer reorders anything.
+2. Eligibility rules let the script SKIP a step, never reorder it: precondition
+   false, already answered (unless `repeatable` — `experience_add` walks one entry
+   per loop), or skipped (unless critical *and* still blocking readiness).
+
+**A question in the catalog is not necessarily in the funnel.** The entries the
+script leaves out — `education_details`, `education_dates`,
+`experience_daily_tasks`, `experience_scope`, `experience_results`,
+`experience_dates`, `skills_confirm`, and the four optional sections
+(`certifications_any`, `languages_any`, `projects_any`, `achievements_any`) —
+stay because the improvement loop (`FOLLOWUP_DEFS`), the entry deep-dives and the
+Review screen's back-edit answer through the same pipeline and need their text,
+`inputType` and `charLimit`.
+
+The split is: the funnel captures what is needed to WRITE a résumé, and
+everything that only IMPROVES one is asked after the first PDF exists, where the
+person can see what it buys them and the analyzer asks only for what that résumé
+is short of. The optional four were appended after the experience loop and cut
+for exactly that reason — four "¿tienes…?" questions in a row, answered "No
+tengo" four times, is a bad last impression of a funnel someone has almost
+finished. Anything moved out of the script this way needs a `FOLLOWUP_DEFS` entry
+or it is not asked anywhere at all; `achievements_any` had none until it left the
+funnel, and `tests/unit/funnel-script.test.ts` now pins that the four are
+reachable from the loop.
+
+**`personal_location` stays in the script here, unlike in the sibling product
+(aicv), and the difference is not cosmetic.** There the question asks for a city
+and the résumé is no worse without one. Here it asks for a ZIP, that ZIP is the
+only answer that yields coordinates, and those coordinates are what let employers
+find someone by proximity in the talent directory — the city and state printed on
+the résumé are looked up from it too (`lib/geo/location-answer.ts`, a
+deterministic table lookup, which is why `POST /answers` intercepts this question
+before the provider). It is also not a candidate for the improvement loop:
+`FOLLOWUP_DEFS` deliberately excludes it, because the generic normalizer would
+read a place name as a person's name. Drop it from the script and the ZIP is
+captured nowhere. What DID change is its position — it is asked with the other
+identity questions, never mid-experience-loop.
+
+Two further consequences worth knowing: experience **dates** now arrive from the
+Review screen rather than the funnel, so an undated entry sinks to the bottom of the
+newest-first order (`lib/resume/experience-order.ts`); and `skills_add` is the
+funnel's only source of a **confirmed** skill — inferred skills stay `suggested`
+and reach nothing, since no funnel step confirms them any more.
+
+
+**Funnel navigation is a TRAIL, client-side** (`lib/client/funnel-trail.ts`).
+`steps` is every question this person has been shown, in order; `cursor` is where
+they stand. "← Volver" is `cursor − 1`, "Continuar" is `cursor + 1`, and nothing
+else moves it — in particular the server's freshly planned `nextQuestion` extends
+the trail only at its END, and is ignored while there is walked trail ahead.
+
+That last rule is the whole point. `nextQuestion` answers "what is still
+outstanding for this profile", which is not "what did this person see next":
+going back used to POP the walk, so backing from experience 4 to experience 1 and
+pressing Continuar jumped straight back to 4 — the only entry still undescribed —
+skipping 2 and 3. A question a re-answer newly opens is not lost, just deferred
+to the end of the walk, where it genuinely is next.
+
+Two invariants ride along, both pinned by `tests/unit/funnel-trail.test.ts`:
+- **A step remembers what it sent.** `sent.answer` goes back into the field via
+  `QuestionCard`'s `initialAnswer`, and `entryId` is passed as `targetEntryId` so
+  re-answering experience 1 OVERWRITES experience 1 instead of being adopted by
+  whichever entry is still undescribed. An unchanged answer is not re-sent at all
+  (`canAdvanceWithoutSending`) — it is already saved, and re-posting it would
+  spend a model call rewriting the same entry with the same words.
+- **`QuestionCard` is keyed by trail POSITION, never by `questionId`.**
+  `experience_add` is asked once per experience, so a questionId key had React
+  reusing one card across all of them — carrying experience 1's text into
+  experience 2's empty field. The remount is also why `initialAnswer` is read once
+  at mount rather than through an effect, which could clear text mid-typing.
+
+`lib/client/answer-fields.ts` owns both directions of the answer string
+(`serializeAnswer` / `parseAnswer`) because restoring depends on them being exact
+inverses — a `date_range` is two fields joined by an en dash and a `type_counts`
+is a JSON payload, so a one-sided change shows the person something they never
+typed.
 
 **Provider split (cost control):** the paid model always handles **résumé
 generation + analysis** (`ai`, the end of the funnel and each regenerate). The
@@ -116,6 +212,7 @@ the same ceiling.
 | `lib/env.ts` | Zod-validated, `server-only` config. Secrets never reach the client |
 | `lib/brand/` | multi-brand system: configs · registry · pure host resolution · `:root` theme emitter · server/client accessors |
 | `components/marketing/` | branded surfaces: shared hero + per-brand headers, dispatched via a registry |
+| `lib/client/` | browser-side, pure: the API client · the funnel **trail** (back/forward) · the answer wire format |
 | `lib/repositories/` | `Store` interface + `MemoryStore` (dev/tests) + `SupabaseStore`; `TalentDirectoryStore` is separate — a cross-user query surface with service-role semantics |
 | `lib/storage/` | `ResumeFileStore` interface + `MemoryResumeFileStore` + Supabase Storage impl — one saved résumé PDF per improvement round |
 | `lib/profile-state.ts` | Assembles `ResumeProfileState`, redacts PII, computes completeness |

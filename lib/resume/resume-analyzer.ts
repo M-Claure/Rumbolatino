@@ -108,6 +108,18 @@ export const FOLLOWUP_DEFS: Record<string, FollowupDef> = {
     applies: (s) => s.education.some((e) => !has(e.institution) || e.relevantCoursework.length === 0),
     priority: 8,
   },
+  // Last of the gaps, because it is the one fewest people have an answer for.
+  // It lives here rather than in the funnel for the same reason as the three
+  // above it: the funnel ends at the experience loop, and a question nobody can
+  // answer is better asked against a résumé you can already see.
+  achievements_any: {
+    section: "achievements",
+    inputType: "long_text",
+    title: "Destaca un logro",
+    defaultQuestion: "¿Tienes algún logro o reconocimiento que quieras destacar?",
+    applies: (s) => s.achievements.length === 0,
+    priority: 9,
+  },
 };
 
 /** Entry deep-dive question ids (personalized questions about a specific entry). */

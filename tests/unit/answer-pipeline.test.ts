@@ -25,76 +25,74 @@ async function answer(
 }
 
 describe("processAnswer — adaptive flow (spec §17 scenario)", () => {
-  it("walks a family-business user from career goal to a ready profile", async () => {
-    // 1. Career goal.
-    let res = await answer("career_goal_target", "career_goal", "Asistente administrativa");
-    // The desired position lands in targetRole; the free-text objective stays
-    // empty for the person to fill in (or leave blank) on the Review screen.
-    expect(res.profileState.targetRole).toBe("Asistente administrativa");
-    // ResumeProfileState uses optional fields, so an unset column reads as undefined.
-    expect(res.profileState.careerGoal).toBeUndefined();
-    expect(res.nextQuestion.section).toBe("personal_information");
-    expect(res.nextQuestion.questionId).toBe("personal_name");
+  it("walks a family-business user through the script to a ready profile", async () => {
+    // The order below is `FUNNEL_SCRIPT`, and every `nextQuestion` assertion is
+    // there to pin it: this is the flow a person actually walks.
 
-    // 2. Name.
-    res = await answer("personal_name", "personal_information", "María García López");
+    // 1. Name.
+    let res = await answer("personal_name", "personal_information", "María García López");
     expect(res.profileState.personalInformation.firstName).toBe("María");
     expect(res.nextQuestion.questionId).toBe("personal_contact");
 
-    // 3. Contact → moves on to education (education-first for low experience).
+    // 2. Contact.
     res = await answer("personal_contact", "personal_information", "maria@example.com");
     expect(res.profileState.personalInformation.hasEmail).toBe(true);
-    expect(res.nextQuestion.section).toBe("education");
+    expect(res.nextQuestion.questionId).toBe("personal_location");
 
-    // 4. Education.
-    res = await answer(
-      "education_highest",
-      "education",
-      "Terminé la secundaria y estudié seis meses de administración",
-    );
+    // 3. Where they are. A ZIP is resolved from the postal table, not by the
+    // model, and it is what lets employers find this profile by proximity.
+    res = await answer("personal_location", "personal_information", "77002");
+    expect(res.profileState.personalInformation.postalCode).toBe("77002");
+    expect(res.nextQuestion.questionId).toBe("career_goal_target");
+
+    // 4. The job being sought. The desired position lands in targetRole; the
+    // free-text objective stays empty for the person to fill in (or leave blank)
+    // on the Review screen.
+    res = await answer("career_goal_target", "career_goal", "Asistente administrativa");
+    expect(res.profileState.targetRole).toBe("Asistente administrativa");
+    // ResumeProfileState uses optional fields, so an unset column reads as undefined.
+    expect(res.profileState.careerGoal).toBeUndefined();
+    expect(res.nextQuestion.questionId).toBe("education_highest");
+
+    // 5. Education — one question, then the funnel moves on.
+    res = await answer("education_highest", "education", "Terminé la secundaria");
     expect(res.profileState.education.length).toBe(1);
     // The AI-extracted education entry needs confirmation.
     expect(res.interpretation?.needsConfirmation).toBe(true);
+    expect(res.nextQuestion.questionId).toBe("experience_type_counts");
 
-    // 5. Experience add — creates an entry and preserves raw wording.
+    // 6. How many experiences — creates one still-empty entry per experience.
+    res = await answer("experience_type_counts", "experience", JSON.stringify({ family_business: 1 }));
+    expect(res.profileState.experience.length).toBe(1);
+    expect(res.nextQuestion.questionId).toBe("skills_add");
+
+    // 7. The skills the person names themselves — the funnel's only source of
+    // CONFIRMED skills, which is why it is asked before the experience loop.
+    res = await answer("skills_add", "skills", "Atención al cliente, puntualidad");
+    expect(res.profileState.confirmedSkills.map((s) => s.name)).toEqual(
+      expect.arrayContaining(["Atención al cliente", "puntualidad"]),
+    );
+    expect(res.nextQuestion.questionId).toBe("experience_add");
+
+    // 8. One description per experience: raw wording preserved, type kept.
     res = await answer(
       "experience_add",
       "experience",
-      "Ayudaba en el negocio de limpieza de mi mamá",
+      "Ayudaba en el negocio de limpieza de mi mamá respondiendo llamadas y organizando las citas de los clientes",
     );
-    expect(res.profileState.experience.length).toBe(1);
     expect(res.profileState.experience[0]!.rawDescription).toContain("limpieza");
     expect(res.profileState.experience[0]!.experienceType).toBe("family_business");
 
-    // 6. Experience detail — produces evidence-backed skill suggestions.
-    res = await answer(
-      "experience_daily_tasks",
-      "experience",
-      "Respondía llamadas y organizaba las citas de los clientes",
-    );
-    const suggestedNames = res.profileState.suggestedSkills.map((s) => s.name);
-    expect(suggestedNames).toEqual(
-      expect.arrayContaining(["Atención al cliente", "Comunicación telefónica"]),
-    );
+    // Skills are still inferred from that narrative, and still never auto-confirmed.
     for (const s of res.profileState.suggestedSkills) {
-      expect(s.status).toBe("suggested"); // never auto-confirmed
+      expect(s.status).toBe("suggested");
       expect(s.evidence).toBeTruthy();
     }
-    // Next step is to confirm the suggested skills.
-    expect(res.nextQuestion.questionId).toBe("skills_confirm");
-    expect(res.nextQuestion.inputType).toBe("skill_confirmation");
 
-    // 7. Confirm a subset of skills.
-    const toConfirm = res.profileState.suggestedSkills.slice(0, 2).map((s) => s.id);
-    const toReject = res.profileState.suggestedSkills.slice(2).map((s) => s.id);
-    res = await processAnswer(ctx, {
-      profileId,
-      questionId: "skills_confirm",
-      section: "skills",
-      skillDecisions: { confirm: toConfirm, reject: toReject },
-    });
-    expect(res.profileState.confirmedSkills.length).toBe(2);
+    // The only experience was described, so the loop is done, the profile is
+    // ready, and the funnel is over: straight to review.
     expect(res.profileState.completeness.readyToGenerate).toBe(true);
+    expect(res.nextQuestion.questionId).toBe("review_summary");
   });
 });
 

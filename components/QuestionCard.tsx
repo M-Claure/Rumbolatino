@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { UseMyLocation } from "./UseMyLocation";
 import type { AdaptiveQuestion } from "@/lib/ai/schemas";
+import { parseAnswer, serializeAnswer } from "@/lib/client/answer-fields";
 import { MAX_EXPERIENCE_ENTRIES } from "@/lib/config/limits";
 import { EXPERIENCE_TYPE_OPTIONS } from "@/lib/experience-types";
 import { AiBubble, Button, Card } from "./primitives";
@@ -11,27 +12,37 @@ import { AiBubble, Button, Card } from "./primitives";
  * Renders a single adaptive question by its inputType and collects the answer.
  * skill_confirmation and review are handled by dedicated components upstream.
  *
- * The parent remounts this via `key={questionId}` for each new question, so
+ * The parent remounts this once per POSITION in the funnel (`key={cursor}`), so
  * local input state resets cleanly — no effect-based reset that could race with
- * (and clear) fast input.
+ * (and clear) fast input. Keying by questionId instead is what let one card be
+ * reused across all four `experience_add` questions, carrying experience 1's
+ * text into experience 2.
+ *
+ * `initialAnswer` is what this exact step last sent, so stepping back shows what
+ * the person wrote here rather than an empty field. It is read ONCE, at mount,
+ * for the same reason the reset is a remount: an effect that pushed it into
+ * state could overwrite what is being typed.
  */
 export function QuestionCard({
   question,
+  initialAnswer,
   onSubmit,
   onSkip,
   busy,
 }: {
   question: AdaptiveQuestion;
+  initialAnswer?: string | null;
   onSubmit: (rawAnswer: string) => void;
   onSkip: () => void;
   busy: boolean;
 }) {
-  const [text, setText] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
+  const restored = parseAnswer(question.inputType, initialAnswer ?? null);
+  const [text, setText] = useState(restored.text);
+  const [selected, setSelected] = useState<string[]>(restored.selected);
+  const [start, setStart] = useState(restored.start);
+  const [end, setEnd] = useState(restored.end);
   // For type_counts: how many of each experience type the user has.
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [counts, setCounts] = useState<Record<string, number>>(restored.counts);
 
   // The TOTAL across types is capped at MAX_EXPERIENCE_ENTRIES: each experience
   // costs the person a describe question plus follow-ups, and the résumé curates
@@ -47,21 +58,10 @@ export function QuestionCard({
   const totalCounts = Object.values(counts).reduce((sum, n) => sum + n, 0);
   const countsRemaining = Math.max(0, MAX_EXPERIENCE_ENTRIES - totalCounts);
 
-  const answer = (): string => {
-    switch (question.inputType) {
-      case "multi_select":
-        return selected.join(", ");
-      case "date_range":
-        return [start, end].filter(Boolean).join(" – ");
-      case "type_counts":
-        // Machine-readable payload the pipeline expands into one entry per count.
-        return JSON.stringify(
-          Object.fromEntries(Object.entries(counts).filter(([, n]) => n > 0)),
-        );
-      default:
-        return text.trim();
-    }
-  };
+  // Serialized by the same module that parses `initialAnswer` back, so what is
+  // restored on the way back is exactly what was sent. See lib/client/answer-fields.ts.
+  const answer = (): string =>
+    serializeAnswer(question.inputType, { text, selected, start, end, counts });
 
   // Per-question limit, resolved server-side from the catalog and sent with the
   // question — so this is exactly what the API will accept.

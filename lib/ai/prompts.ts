@@ -74,29 +74,48 @@ function stateDigest(state: PlanQuestionParams["state"]): string {
   );
 }
 
+/**
+ * The model REWORDS the next question; it does not choose it.
+ *
+ * The question is already decided — `FUNNEL_SCRIPT` decides it and
+ * `planNextQuestion` pins it before this prompt is built — so asking the model to
+ * pick would only reintroduce the wandering order this funnel was fixed to stop.
+ * A decision that comes back naming any other questionId is discarded, which is
+ * why the instruction is stated as a constraint rather than a preference.
+ */
 export function buildPlannerPrompt(params: PlanQuestionParams): string {
-  const candidates = params.candidates.map((c) => ({
-    questionId: c.questionId,
-    section: c.section,
-    defaultText: c.defaultText,
-    inputType: c.inputType,
-    intent: c.intent,
-  }));
-  return `Tu tarea: elegir la SIGUIENTE pregunta más útil para completar el currículum de la persona.
+  const next = params.candidates[0];
+  const upcoming = params.candidates.slice(1).map((c) => c.defaultText);
+  return `Tu tarea: REESCRIBIR la siguiente pregunta del cuestionario para esta persona. La pregunta ya está decidida; tú solo la haces sonar natural y cercana.
 
 Estado actual del perfil (información sensible ya redactada):
 ${stateDigest(params.state)}
 
-Sección recomendada por el sistema: ${params.recommendedSection}
+Sección recomendada por el sistema (solo contexto): ${params.recommendedSection}
 
-Preguntas candidatas permitidas (DEBES elegir "questionId" de esta lista, no inventes otro):
-${JSON.stringify(candidates, null, 0)}
+La pregunta que debes reescribir:
+${JSON.stringify(
+  next
+    ? {
+        questionId: next.questionId,
+        section: next.section,
+        defaultText: next.defaultText,
+        inputType: next.inputType,
+        intent: next.intent,
+      }
+    : null,
+  null,
+  0,
+)}
+
+Preguntas que vienen después (NO las hagas todavía, solo para que no repitas su contenido):
+${JSON.stringify(upcoming, null, 0)}
 
 Instrucciones:
-- Elige exactamente una "questionId" de la lista.
-- Personaliza "questionText" en español, cálido y claro, adaptándolo a lo que la persona ya contó. Conserva la intención de la pregunta.
-- No repitas preguntas ya respondidas ni recientemente omitidas.
-- "nextAction" normalmente es "ask_question"; usa "confirm_skills" si hay habilidades sugeridas pendientes, "review_profile" o "generate_resume" solo si el perfil está listo.
+- "questionId" y "section" DEBEN ser exactamente los de la pregunta de arriba. No elijas otra.
+- Personaliza "questionText" en español, cálido y claro, adaptándolo a lo que la persona ya contó. Conserva la intención y lo que se pide.
+- No adelantes ni juntes las preguntas que vienen después.
+- "nextAction" normalmente es "ask_question"; usa "confirm_skills" si la pregunta es de confirmación de habilidades, "review_profile" o "generate_resume" solo si el perfil está listo.
 
 ${JSON_ONLY} Debe cumplir el esquema PlannerDecision: { questionId, section, questionText, supportingText?, reasonForAsking?, exampleAnswer?, contextUsed[], nextAction }.`;
 }
