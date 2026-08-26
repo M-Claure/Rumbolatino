@@ -17,6 +17,7 @@
     "demo:seed:clean": "vite-node --config vitest.config.ts scripts/seed-talent-demo.ts -- --clean",
     "resume:list": "vite-node --config vitest.config.ts scripts/delete-resume.ts -- --list",
     "resume:delete": "vite-node --config vitest.config.ts scripts/delete-resume.ts --",
+    "resume:costs": "vite-node --config vitest.config.ts scripts/delete-resume.ts -- --costs",
     "resume:orphans": "vite-node --config vitest.config.ts scripts/delete-resume.ts -- --orphans"
   },
   "dependencies": {

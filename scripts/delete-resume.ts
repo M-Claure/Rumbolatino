@@ -73,6 +73,8 @@ function readEnvFile(path: string): Record<string, string> {
 
 interface Args {
   listOnly: boolean;
+  /** Read-only: print the per-operation spend breakdown instead of deleting. */
+  costs: boolean;
   orphans: boolean;
   profiles: string[];
   user: string | null;
@@ -98,6 +100,7 @@ function parseArgs(argv: string[]): Args {
   const envArg = flagValues(argv, "env")[0];
   return {
     listOnly: argv.includes("--list"),
+    costs: argv.includes("--costs"),
     orphans: argv.includes("--orphans"),
     profiles: flagValues(argv, "profile"),
     user: flagValues(argv, "user")[0] ?? null,
@@ -123,6 +126,8 @@ Borra un curriculum completo de Supabase (la fila de \`funnel\` y todo lo que cu
   npm run resume:delete -- --user=<id|correo>  Todos los curriculums de una persona
   npm run resume:delete -- --all               Todo el proyecto (pide escribir una frase)
   npm run resume:orphans                       Borra PDFs cuya fila de funnel ya no existe
+  npm run resume:costs                         Desglosa el gasto por operación
+  npm run resume:costs -- --profile=<id>       Solo ese currículum
 
 Opciones
   --dry-run        Muestra el plan sin borrar nada
@@ -166,7 +171,7 @@ interface Detail {
   /** Objects actually present under `<user_id>/<funnel_id>/` in the bucket. */
   storagePaths: string[];
   /** `available: false` means the usage-limits tables are not in this project. */
-  spend: { rows: number; usd: number; available: boolean };
+  spend: { rows: number; usd: number; available: boolean; byOperation: OperationCost[] };
 }
 
 /**
@@ -235,6 +240,59 @@ async function fetchRows(admin: SupabaseClient, args: Args): Promise<FunnelRow[]
 }
 
 /** Everything that hangs off one résumé, counted before anything is removed. */
+/** One row of the `ai_spend` ledger, as this script reads it. */
+interface SpendRow {
+  operation: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  /** `numeric` arrives from PostgREST as a string. */
+  usd_estimate: number | string;
+}
+
+/** What one KIND of model call cost this résumé. */
+interface OperationCost {
+  operation: string;
+  calls: number;
+  usd: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Prompt-cache hits. Billed at a discount, so a high number here is good news. */
+  cachedTokens: number;
+  models: string[];
+}
+
+/**
+ * Group a ledger into one line per operation, dearest first.
+ *
+ * Ordered by cost rather than by name or by time because the question this
+ * answers is "what should I look at" — and the answer is the top line.
+ */
+function summariseByOperation(rows: SpendRow[]): OperationCost[] {
+  const byOp = new Map<string, OperationCost>();
+  for (const r of rows) {
+    const op = r.operation || "(sin nombre)";
+    const acc = byOp.get(op) ?? {
+      operation: op,
+      calls: 0,
+      usd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      models: [],
+    };
+    acc.calls += 1;
+    acc.usd += Number(r.usd_estimate ?? 0);
+    acc.inputTokens += r.input_tokens ?? 0;
+    acc.outputTokens += r.output_tokens ?? 0;
+    acc.cachedTokens += r.cached_tokens ?? 0;
+    if (r.model && !acc.models.includes(r.model)) acc.models.push(r.model);
+    byOp.set(op, acc);
+  }
+  return [...byOp.values()].sort((a, b) => b.usd - a.usd);
+}
+
 async function collectDetail(admin: SupabaseClient, row: FunnelRow): Promise<Detail> {
   let iterations = 0;
   for (const n of [1, 2, 3]) {
@@ -253,20 +311,23 @@ async function collectDetail(admin: SupabaseClient, row: FunnelRow): Promise<Det
 
   const { data: spendRows, error: spendError } = await admin
     .from("ai_spend")
-    .select("usd_estimate")
+    // The whole row, not just the dollars: `--costs` answers WHERE the money went,
+    // and one number per résumé cannot. Still one query per résumé — the breakdown
+    // is grouped here rather than by Postgres so the ledger stays readable from any
+    // client, and the row counts involved are tiny.
+    .select("operation, model, input_tokens, output_tokens, cached_tokens, usd_estimate")
     .eq("resume_profile_id", row.id);
   if (spendError && !isMissingTable(spendError)) {
     // Loud, because a spend row this script cannot see is a spend row it will
     // not delete — and the operator would read "$0" as "nothing to clean".
     console.warn(`  ⚠︎ No pude leer ai_spend de ${row.id.slice(0, 8)}: ${spendError.message}`);
   }
+  const ledger = (spendRows ?? []) as SpendRow[];
   const spend = {
     available: !spendError || !isMissingTable(spendError),
-    rows: (spendRows ?? []).length,
-    usd: ((spendRows ?? []) as Array<{ usd_estimate: number | string }>).reduce(
-      (sum, r) => sum + Number(r.usd_estimate ?? 0),
-      0,
-    ),
+    rows: ledger.length,
+    usd: ledger.reduce((sum, r) => sum + Number(r.usd_estimate ?? 0), 0),
+    byOperation: summariseByOperation(ledger),
   };
 
   return {
@@ -337,6 +398,145 @@ function printTable(details: Detail[], numbered: boolean): void {
         shortDate(d.row.created_at),
     );
   });
+}
+
+/**
+ * Why the `gasto` column is empty, when it is empty for EVERY résumé.
+ *
+ * "—" is ambiguous: it means "this résumé cost nothing" and "this project cannot
+ * tell you what anything cost", and the second is not a property of the résumé at
+ * all. `0009_usage_limits.sql` creates `ai_spend`; without it the provider's
+ * `CallSpendRecorder` has nowhere to write and `lib/spend/*` fails OPEN by design
+ * (see CLAUDE.md → Usage limits), so a column of dashes is the only symptom — and
+ * it looks exactly like a cheap month.
+ *
+ * Worth saying out loud rather than leaving to be discovered, because the same
+ * missing migration also silently disables the spend caps and the rate limits on
+ * a product that has no login.
+ */
+function printSpendNotice(details: Detail[]): void {
+  if (details.length === 0 || details.some((d) => d.spend.available)) return;
+  console.log(
+    "\nNota: la columna «gasto» está vacía porque este proyecto de Supabase no tiene la tabla\n" +
+      "`ai_spend`. Aplica supabase/migrations/0009_usage_limits.sql (SQL Editor de Supabase) para\n" +
+      "empezar a registrar el costo. Sin esa tabla tampoco se aplican los topes de gasto\n" +
+      "(AI_SPEND_CAP_*) ni los límites de peticiones: el código deja pasar todo a propósito.",
+  );
+}
+
+/**
+ * `--costs`: where each résumé's money actually went.
+ *
+ * The `gasto` column in the listing is one number, which tells you a résumé was
+ * expensive but never why. Generation, the improvement-loop analysis, the
+ * proofread and per-answer normalization are charged at very different
+ * `reasoning.effort` levels (see CLAUDE.md → the provider split), so the useful
+ * question is which of them dominates — and the answer decides whether the lever
+ * is the funnel, the analyzer or the model tier.
+ *
+ * Cached tokens are shown next to the billed ones because prompt caching is
+ * automatic on this platform: a large cache column on the analysis and proofread
+ * calls is the system working, and its absence is a real regression that no
+ * dollar total makes visible.
+ */
+function printCosts(details: Detail[]): void {
+  if (!details.some((d) => d.spend.available)) {
+    printSpendNotice(details);
+    return;
+  }
+
+  const withSpend = details.filter((d) => d.spend.byOperation.length > 0);
+  if (withSpend.length === 0) {
+    console.log(
+      "Ningún currículum de esta lista tiene gasto registrado.\n" +
+        "El gasto solo se guarda desde que existe la tabla `ai_spend`, así que los currículums\n" +
+        "anteriores a la migración 0009 no tienen historial. Genera uno nuevo y vuelve a mirar.",
+    );
+    return;
+  }
+
+  /*
+   * One set of widths for the header, the rows and the totals. Built from a
+   * table rather than inline `padStart` calls because a header that disagrees
+   * with its rows by two characters — "llamadas" is wider than the numbers under
+   * it — silently shifts every column to its right, and a misaligned cost table
+   * is read wrong before it is read carefully.
+   */
+  const W = { op: 22, calls: 9, input: 10, output: 9, cached: 9, usd: 11, pct: 5 };
+  const money = (n: number) => `$${n.toFixed(4)}`;
+  const share = (part: number, whole: number) =>
+    whole > 0 ? `${Math.round((part / whole) * 100)}%` : "—";
+  const row = (cells: Array<[string, number]>) =>
+    "  " + cells.map(([v, w], i) => (i === 0 ? v.padEnd(w) : v.padStart(w))).join("");
+  const header = row([
+    ["operación", W.op],
+    ["llamadas", W.calls],
+    ["entrada", W.input],
+    ["salida", W.output],
+    ["caché", W.cached],
+    ["gasto", W.usd],
+    ["%", W.pct],
+  ]);
+
+  withSpend.forEach((d, i) => {
+    console.log(
+      `${i === 0 ? "" : "\n"}${d.row.id.slice(0, 8)}  ${displayName(d.row)} — ` +
+        `${money(d.spend.usd)} en ${d.spend.rows} llamada(s)`,
+    );
+    console.log(header);
+    console.log(`  ${"─".repeat(header.length - 2)}`);
+    for (const c of d.spend.byOperation) {
+      console.log(
+        row([
+          [c.operation, W.op],
+          [String(c.calls), W.calls],
+          [String(c.inputTokens), W.input],
+          [String(c.outputTokens), W.output],
+          [String(c.cachedTokens), W.cached],
+          [money(c.usd), W.usd],
+          [share(c.usd, d.spend.usd), W.pct],
+        ]),
+      );
+    }
+    const models = [...new Set(d.spend.byOperation.flatMap((c) => c.models))];
+    if (models.length > 0) console.log(`  modelo(s): ${models.join(", ")}`);
+  });
+
+  // The same grouping across everything listed. Only worth printing when there
+  // is more than one résumé to add up — otherwise it restates the table above.
+  if (withSpend.length > 1) {
+    const all = withSpend.flatMap((d) =>
+      d.spend.byOperation.map((c) => ({ ...c, models: [...c.models] })),
+    );
+    const totals = new Map<string, { calls: number; usd: number }>();
+    for (const c of all) {
+      const acc = totals.get(c.operation) ?? { calls: 0, usd: 0 };
+      acc.calls += c.calls;
+      acc.usd += c.usd;
+      totals.set(c.operation, acc);
+    }
+    const grand = withSpend.reduce((sum, d) => sum + d.spend.usd, 0);
+    const calls = withSpend.reduce((sum, d) => sum + d.spend.rows, 0);
+    console.log(
+      `\nTotal: ${money(grand)} en ${withSpend.length} currículum(s) y ${calls} llamada(s)` +
+        ` — ${money(grand / withSpend.length)} de media`,
+    );
+    for (const [op, t] of [...totals].sort((a, b) => b[1].usd - a[1].usd)) {
+      // Same columns as above, with the token cells blank: they are per-call
+      // detail, and summing them across résumés says nothing useful.
+      console.log(
+        row([
+          [op, W.op],
+          [String(t.calls), W.calls],
+          ["", W.input],
+          ["", W.output],
+          ["", W.cached],
+          [money(t.usd), W.usd],
+          [share(t.usd, grand), W.pct],
+        ]),
+      );
+    }
+  }
 }
 
 function printPlan(details: Detail[], args: Args): void {
@@ -597,9 +797,16 @@ async function main(): Promise<void> {
   // ── List and stop ──────────────────────────────────────────────────────────
   if (args.listOnly) {
     printTable(details, false);
+    printSpendNotice(details);
     console.log(
       `\n${details.length} curriculum(s). Borra uno con: npm run resume:delete -- --profile=<id>`,
     );
+    return;
+  }
+
+  // ── Break the spend down and stop ──────────────────────────────────────────
+  if (args.costs) {
+    printCosts(details);
     return;
   }
 
