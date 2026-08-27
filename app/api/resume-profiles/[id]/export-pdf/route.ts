@@ -24,11 +24,14 @@ export const runtime = "nodejs";
  * deliberately best-effort). That fallback also back-fills the stored file, so a
  * profile self-heals after one download.
  */
-export async function POST(_request: Request, { params }: { params: { id: string } }) {
+export async function POST(request: Request, { params }: { params: { id: string } }) {
   return handleRoute(async () => {
     const { userId, store, ai, analytics, resumeFiles, resumeArtifacts } =
       await getRequestContext(params.id);
     const profile = await loadOwnedProfile(store, params.id, userId);
+    // `?lang=en` downloads the stored translation instead of the Spanish résumé.
+    // Anything else is the Spanish one — an unknown code must not 500 a download.
+    const lang = new URL(request.url).searchParams.get("lang") === "en" ? "en" : "es";
     // No tokens here, so no budget check — but each call may cold-start Chromium
     // inside a 60s function, which is the cheapest way to exhaust concurrency.
     await enforceRateLimit("export_pdf", { userId });
@@ -39,7 +42,9 @@ export async function POST(_request: Request, { params }: { params: { id: string
       throw Errors.notReady("Finaliza tu currículum antes de descargarlo.");
     }
 
-    analytics.track("pdf_export_started", { resumeProfileId: params.id }, userId);
+    analytics.track("pdf_export_started", { resumeProfileId: params.id, language: lang }, userId);
+
+    if (lang === "en") return await exportTranslation();
 
     let resume = await store.getLatestGeneratedResume(params.id);
     if (!resume) {
@@ -67,13 +72,49 @@ export async function POST(_request: Request, { params }: { params: { id: string
 
     analytics.track("resume_downloaded", { resumeProfileId: params.id, version: resume.version }, userId);
 
-    return new NextResponse(Buffer.from(pdf), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="curriculum.pdf"`,
-        "Content-Length": String(pdf.byteLength),
-      },
-    });
+    return pdfResponse(pdf, "curriculum.pdf");
+
+    /**
+     * The English path.
+     *
+     * Deliberately never TRANSLATES on a miss, unlike the Spanish path above which
+     * will generate. Generating is recovering a résumé the person already paid for;
+     * translating would be starting a paid operation from a download button, behind
+     * the `export_pdf` rate limit and with no budget check. If there is no
+     * translation, say so and let them press the button that does have those guards.
+     */
+    async function exportTranslation() {
+      const translation = await store.getTranslatedResume(params.id, "en");
+      if (!translation || !translation.html) {
+        throw Errors.notReady("Aún no has creado la versión en inglés de tu currículum.");
+      }
+
+      let bytes = translation.pdfPath
+        ? await resumeFiles.getResumePdf({ userId, profileId: params.id, lang: "en" })
+        : null;
+      if (!bytes) {
+        bytes = await getPdfGenerator().generate(translation.html);
+        // Back-fill, same self-healing as the Spanish path. Best-effort by contract.
+        await resumeArtifacts.onTranslationCreated(translation);
+      }
+
+      analytics.track(
+        "resume_downloaded",
+        { resumeProfileId: params.id, version: translation.sourceVersion, language: "en" },
+        userId,
+      );
+      return pdfResponse(bytes, "resume-en.pdf");
+    }
+  });
+}
+
+function pdfResponse(pdf: Uint8Array, filename: string): NextResponse {
+  return new NextResponse(Buffer.from(pdf), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Length": String(pdf.byteLength),
+    },
   });
 }

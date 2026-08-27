@@ -17,6 +17,7 @@ import type {
   ProofreadResumeParams,
   ResumeGenerationInput,
   SuggestSkillsParams,
+  TranslateResumeParams,
 } from "./provider";
 import {
   AnswerNormalizationSchema,
@@ -26,6 +27,7 @@ import {
   ResumeAnalysisSchema,
   ResumeContentSchema,
   SuggestedSkillSchema,
+  TranslationResultSchema,
   type AnswerNormalization,
   type InterestsExtraction,
   type PlannerDecision,
@@ -33,6 +35,7 @@ import {
   type ResumeAnalysisPayload,
   type ResumeContent,
   type SuggestedSkillPayload,
+  type TranslationResult,
 } from "./schemas";
 import { EXPERIENCE_TYPES, type ExperienceType } from "@/types";
 import { MAX_EXPERIENCE_ENTRIES } from "@/lib/config/limits";
@@ -180,6 +183,22 @@ function inferSkills(texts: string[], exclude: Set<string>): SuggestedSkillPaylo
   }
   return out.map((s) => SuggestedSkillSchema.parse(s));
 }
+
+/**
+ * The fixed labels an offline translation can honestly produce: résumé furniture
+ * and the language levels, which are a closed set. Everything else is free prose
+ * and stays as written — see `translateResume`.
+ */
+const MOCK_GLOSSARY: Record<string, string> = {
+  actualidad: "Present",
+  presente: "Present",
+  básico: "Basic",
+  basico: "Basic",
+  intermedio: "Intermediate",
+  avanzado: "Advanced",
+  nativo: "Native",
+  general: "General",
+};
 
 export class MockAIProvider implements AIProvider {
   readonly name = "mock";
@@ -490,6 +509,25 @@ export class MockAIProvider implements AIProvider {
       return { id: it.id, text: text.length > 0 ? capitalize(text) : text };
     });
     return ProofreadResultSchema.parse({ items, notes: [] });
+  }
+
+  /**
+   * Deterministic stand-in for translation: a small built-in glossary over the
+   * fixed labels the résumé prints, and the original text for everything else.
+   *
+   * It deliberately does NOT pretend to translate free prose. Real translation
+   * needs the model, and a mock that mangled bullets into fake English would make
+   * the unit tests assert against nonsense. What the tests actually need to hold is
+   * structural — every id echoed, ids and traces preserved, proper nouns untouched
+   * — and returning the original text for prose exercises exactly the
+   * omitted-id/unchanged-text path the applier has to survive in production.
+   */
+  async translateResume(params: TranslateResumeParams): Promise<TranslationResult> {
+    const items = params.items.map((it) => ({
+      id: it.id,
+      text: MOCK_GLOSSARY[it.text.trim().toLocaleLowerCase("es")] ?? it.text,
+    }));
+    return TranslationResultSchema.parse({ items });
   }
 
   async generateResumeContent(input: ResumeGenerationInput): Promise<ResumeContent> {

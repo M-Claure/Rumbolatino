@@ -22,6 +22,13 @@ export type PaidOperation =
   | "analyze"
   | "proofread"
   | "regenerate_section"
+  /**
+   * Translating a finished résumé. Deliberately NOT covered by the first-résumé
+   * exemption below: the product's promise is the first Spanish PDF, and an English
+   * version is an extra. Someone who has burned their whole budget should still be
+   * refused this, the way they are refused an improvement.
+   */
+  | "translate"
   /** Model-assisted capture — interests, enrichment. Degrades rather than blocks. */
   | "assist";
 

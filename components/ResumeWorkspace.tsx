@@ -32,11 +32,21 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
   // difference between "we checked your spelling" and honestly not claiming so.
   const [proofreadFailed, setProofreadFailed] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  /*
+   * The English version. `null` = never translated; `stale` = translated, but the
+   * Spanish résumé has moved on since. Both come from GET /translate, which costs
+   * nothing — the model call happens only when the user presses the button.
+   */
+  const [translation, setTranslation] = useState<{ exists: boolean; current: boolean }>({
+    exists: false,
+    current: false,
+  });
+  const [translating, setTranslating] = useState(false);
   // Improvement rounds completed. Server state (`funnel.iteration`), not
   // localStorage: the cap is enforced by POST /generate, so clearing site data
   // no longer hands the user extra rounds. This state only drives the copy shown.
   const [iterations, setIterations] = useState(0);
-  const busy = regenerating || reviewing || downloading;
+  const busy = regenerating || reviewing || downloading || translating;
   const atLimit = iterations >= MAX_RESUME_ITERATIONS;
   const remaining = Math.max(0, MAX_RESUME_ITERATIONS - iterations);
 
@@ -52,6 +62,15 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
       })
       .catch(() => {
         /* non-fatal: default to not-finalized */
+      });
+    void api
+      .getTranslation(profileId)
+      .then(({ translation: t, current }) => {
+        if (cancelled) return;
+        setTranslation({ exists: t !== null, current });
+      })
+      .catch(() => {
+        /* non-fatal: default to "never translated" */
       });
     return () => {
       cancelled = true;
@@ -122,6 +141,11 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
       setPreviewVersion((v) => v + 1);
       setDirty(false);
       setFinalizedAt(null); // regenerating unlocks: the new version must be re-finalized
+      // The English version now describes a résumé that no longer exists. It is
+      // kept — it is still a real document the person asked for — but it is marked
+      // stale so the button offers to update it rather than silently handing over
+      // an outdated PDF.
+      setTranslation((t) => (t.exists ? { exists: true, current: false } : t));
       await runAnalysis();
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
@@ -132,25 +156,55 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
   }, [profileId, runAnalysis, iterations]);
 
   /** Trigger a browser download of the (already generated) PDF. */
-  const download = useCallback(async () => {
-    setDownloading(true);
+  const downloadLang = useCallback(
+    async (lang: "es" | "en") => {
+      setDownloading(true);
+      setError(null);
+      try {
+        const blob = await api.downloadPdf(profileId, lang);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = lang === "en" ? "resume-en.pdf" : "curriculum.pdf";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "No se pudo descargar el PDF.");
+      } finally {
+        setDownloading(false);
+      }
+    },
+    [profileId],
+  );
+  const download = useCallback(() => downloadLang("es"), [downloadLang]);
+
+  /**
+   * Get the English version.
+   *
+   * Translates only when there is nothing current to hand over — an existing,
+   * up-to-date translation downloads straight from storage with no model call.
+   * That is the whole cost design: the person can press this as often as they
+   * like, and it costs money only when the résumé has actually changed.
+   */
+  const getEnglish = useCallback(async () => {
+    if (translation.exists && translation.current) {
+      await downloadLang("en");
+      return;
+    }
+    setTranslating(true);
     setError(null);
     try {
-      const blob = await api.downloadPdf(profileId);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "curriculum.pdf";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await api.translate(profileId);
+      setTranslation({ exists: true, current: true });
+      await downloadLang("en");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo descargar el PDF.");
+      setError(err instanceof Error ? err.message : "No se pudo crear la versión en inglés.");
     } finally {
-      setDownloading(false);
+      setTranslating(false);
     }
-  }, [profileId]);
+  }, [profileId, translation, downloadLang]);
 
   /** Proofread (spelling/grammar/formatting) then finalize; preview refreshes. */
   const reviewAndFinalize = useCallback(async () => {
@@ -265,6 +319,13 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
               <Button onClick={download} disabled={busy}>
                 {downloading ? "Descargando…" : "Descargar PDF"}
               </Button>
+              <Button variant="secondary" onClick={getEnglish} disabled={busy}>
+                {translating
+                  ? "Traduciendo…"
+                  : translation.exists && !translation.current
+                    ? "Actualizar versión en inglés"
+                    : "Descargar en inglés"}
+              </Button>
               <Button variant="text" onClick={reopen} disabled={busy}>
                 Seguir editando
               </Button>
@@ -287,6 +348,11 @@ export function ResumeWorkspace({ profileId }: { profileId: string }) {
               ? "Tu currículum está listo para descargar. Esta vez no pudimos revisar la ortografía, pero tu currículum está completo."
               : "Revisamos tu currículum y está listo para descargar."}{" "}
             Revisa la vista previa y pulsa <strong>Descargar PDF</strong>.
+          </p>
+          <p className="mt-2 text-sm text-accent-dark">
+            {translation.exists && !translation.current
+              ? "Cambiaste tu currículum. Pulsa Actualizar versión en inglés para tener el inglés al día."
+              : "¿Lo necesitas en inglés? Pulsa Descargar en inglés y te lo damos traducido."}
           </p>
           {reviewNotes.length > 0 && (
             <ul className="mt-1 list-disc pl-5 text-xs text-accent-dark">

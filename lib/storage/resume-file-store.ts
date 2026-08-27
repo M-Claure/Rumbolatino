@@ -1,4 +1,5 @@
 import type { Store } from "@/lib/repositories/store";
+import type { ResumeLang } from "@/types";
 
 /**
  * Binary artifact storage for résumé PDFs.
@@ -57,6 +58,16 @@ export interface ResumePdfRef {
    * it always did.
    */
   stage?: number;
+  /**
+   * Language of the document. Defaults to "es", the résumé the funnel produces.
+   *
+   * A translation has NO per-round history: it mirrors whatever the current
+   * résumé is, so there is one object per language and a re-translate overwrites
+   * it. That is why `lang` and `stage` do not multiply — `stage` is ignored for
+   * anything but "es". A profile therefore tops out at five objects: four rounds
+   * of Spanish plus one English.
+   */
+  lang?: ResumeLang;
 }
 
 /**
@@ -70,8 +81,13 @@ export interface ResumePdfRef {
  * Stage 0 keeps the name `curriculum.pdf` rather than `iteration-0.pdf`: it is
  * the file every profile already has on disk from before 0008, and renaming it
  * would orphan those bytes for no gain.
+ *
+ * A translation lands in the SAME folder (`curriculum-en.pdf`) for the same RLS
+ * reason — the policies key on the first segment, so a sibling folder per language
+ * would need new policies to authorize the same person for their own file.
  */
-export function resumePdfPath({ userId, profileId, stage = 0 }: ResumePdfRef): string {
+export function resumePdfPath({ userId, profileId, stage = 0, lang = "es" }: ResumePdfRef): string {
+  if (lang !== "es") return `${userId}/${profileId}/curriculum-${lang}.pdf`;
   const file = stage > 0 ? `iteration-${stage}.pdf` : "curriculum.pdf";
   return `${userId}/${profileId}/${file}`;
 }
@@ -113,4 +129,7 @@ export class MemoryResumeFileStore implements ResumeFileStore {
 }
 
 /** Narrow slice of `Store` the artifact writer needs — keeps its deps honest. */
-export type ResumeRowUpdater = Pick<Store, "updateGeneratedResume" | "setIterationResumePdf">;
+export type ResumeRowUpdater = Pick<
+  Store,
+  "updateGeneratedResume" | "setIterationResumePdf" | "updateTranslatedResume"
+>;

@@ -5,7 +5,7 @@
  * Every method returns a value already validated against a Zod schema in
  * lib/ai/schemas.ts — callers can trust the shape.
  */
-import type { ResumeProfileState, ResumeSection } from "@/types";
+import type { ResumeLang, ResumeProfileState, ResumeSection } from "@/types";
 import type { GeneratedResume } from "@/types";
 import type {
   AnswerNormalization,
@@ -16,6 +16,7 @@ import type {
   ResumeAnalysisPayload,
   ResumeContent,
   SuggestedSkillPayload,
+  TranslationResult,
 } from "./schemas";
 
 /** A catalog-derived question the planner is allowed to choose from. */
@@ -63,6 +64,13 @@ export interface ExtractInterestsParams {
 export interface ProofreadResumeParams {
   /** Prose snippets to correct, each with a stable id the response must echo. */
   items: Array<{ id: string; text: string }>;
+}
+
+export interface TranslateResumeParams {
+  /** Résumé fragments to translate, each with a stable id the response must echo. */
+  items: Array<{ id: string; text: string }>;
+  /** The language to translate INTO. The source is always the Spanish résumé. */
+  targetLanguage: ResumeLang;
 }
 
 /** Confirmed-only data handed to resume generation (spec §12). */
@@ -125,4 +133,6 @@ export interface AIProvider {
   analyzeResume(params: AnalyzeResumeParams): Promise<ResumeAnalysisPayload>;
   /** Final spelling/grammar/formatting pass over generated prose (facts preserved). */
   proofreadResume(params: ProofreadResumeParams): Promise<ProofreadResult>;
+  /** Translate a finished résumé's prose and labels (facts and structure preserved). */
+  translateResume(params: TranslateResumeParams): Promise<TranslationResult>;
 }

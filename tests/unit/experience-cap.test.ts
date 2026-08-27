@@ -37,6 +37,7 @@ function greedyProvider(count: number): AIProvider {
     generateResumeContent: (p) => mock.generateResumeContent(p),
     analyzeResume: (p) => mock.analyzeResume(p),
     proofreadResume: (p) => mock.proofreadResume(p),
+    translateResume: (p) => mock.translateResume(p),
     async normalizeAnswer(): Promise<AnswerNormalization> {
       return {
         interpretationSummary: "Anoté tus experiencias.",
@@ -138,6 +139,7 @@ describe("education cap", () => {
       generateResumeContent: (p) => mock.generateResumeContent(p),
       analyzeResume: (p) => mock.analyzeResume(p),
       proofreadResume: (p) => mock.proofreadResume(p),
+      translateResume: (p) => mock.translateResume(p),
       async normalizeAnswer(): Promise<AnswerNormalization> {
         return {
           interpretationSummary: "Anoté tus estudios.",

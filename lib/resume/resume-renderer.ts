@@ -6,7 +6,7 @@
  * SECURITY: all dynamic strings are HTML-escaped — resume content comes from
  * user/AI text and must never be injected as markup.
  */
-import { CURRENT_DATE_LABEL } from "@/lib/experience-dates";
+import { currentDateLabel } from "@/lib/experience-dates";
 import { labelForType } from "@/lib/experience-types";
 import type {
   GeneratedCertificationBlock,
@@ -15,7 +15,68 @@ import type {
   GeneratedLanguageBlock,
   GeneratedProjectBlock,
   GeneratedSkillGroup,
+  ResumeLang,
 } from "@/types";
+
+/**
+ * Every fixed string the document prints, per language.
+ *
+ * These are the parts of the résumé the model never sees: the translation pass
+ * sends the user's PROSE, not the furniture around it. Keeping the furniture in
+ * code means an English résumé costs exactly one call over the prose — and means
+ * a heading can never come back mistranslated or missing.
+ *
+ * `locale` drives `toLocale*Case`, which matters for more than politeness: the
+ * Turkish-i class of bug aside, Spanish and English disagree on nothing here, but
+ * hardcoding "es" while printing English text is the kind of thing that silently
+ * stops being true when a third language is added.
+ */
+interface ResumeLabels {
+  locale: string;
+  documentKind: string;
+  summary: string;
+  experience: string;
+  education: string;
+  skills: string;
+  projects: string;
+  certifications: string;
+  languages: string;
+  interests: string;
+  /** Heading fallback when an entry has no title/organization and no type. */
+  experienceFallback: string;
+  educationFallback: string;
+}
+
+const LABELS: Record<ResumeLang, ResumeLabels> = {
+  es: {
+    locale: "es",
+    documentKind: "Currículum",
+    summary: "Resumen profesional",
+    experience: "Experiencia",
+    education: "Educación",
+    skills: "Habilidades",
+    projects: "Proyectos",
+    certifications: "Certificaciones",
+    languages: "Idiomas",
+    interests: "Intereses",
+    experienceFallback: "Experiencia",
+    educationFallback: "Educación",
+  },
+  en: {
+    locale: "en",
+    documentKind: "Resume",
+    summary: "Professional Summary",
+    experience: "Experience",
+    education: "Education",
+    skills: "Skills",
+    projects: "Projects",
+    certifications: "Certifications",
+    languages: "Languages",
+    interests: "Interests",
+    experienceFallback: "Experience",
+    educationFallback: "Education",
+  },
+};
 
 export interface ResumeRenderModel {
   fullName: string;
@@ -37,7 +98,8 @@ export interface ResumeRenderModel {
   interests: string[];
 }
 
-export function renderResumeHtml(model: ResumeRenderModel): string {
+export function renderResumeHtml(model: ResumeRenderModel, lang: ResumeLang = "es"): string {
+  const t = LABELS[lang];
   const contactLine = [
     model.location,
     model.contact.email,
@@ -52,31 +114,31 @@ export function renderResumeHtml(model: ResumeRenderModel): string {
   const sections: string[] = [];
 
   if (model.professionalSummary.trim()) {
-    sections.push(section("Resumen profesional", `<p class="summary">${esc(model.professionalSummary)}</p>`));
+    sections.push(section(t.summary, `<p class="summary">${esc(model.professionalSummary)}</p>`));
   }
 
   if (model.experience.length > 0) {
-    sections.push(section("Experiencia", model.experience.map(renderExperience).join("")));
+    sections.push(section(t.experience, model.experience.map((e) => renderExperience(e, lang)).join("")));
   }
 
   if (model.education.length > 0) {
-    sections.push(section("Educación", model.education.map(renderEducation).join("")));
+    sections.push(section(t.education, model.education.map((e) => renderEducation(e, lang)).join("")));
   }
 
   if (model.skills.length > 0) {
-    sections.push(section("Habilidades", model.skills.map(renderSkillGroup).join("")));
+    sections.push(section(t.skills, model.skills.map((g) => renderSkillGroup(g, lang)).join("")));
   }
 
   if (model.projects.length > 0) {
-    sections.push(section("Proyectos", model.projects.map(renderProject).join("")));
+    sections.push(section(t.projects, model.projects.map(renderProject).join("")));
   }
 
   if (model.certifications.length > 0) {
-    sections.push(section("Certificaciones", model.certifications.map(renderCertification).join("")));
+    sections.push(section(t.certifications, model.certifications.map((c) => renderCertification(c, lang)).join("")));
   }
 
   if (model.languages.length > 0) {
-    sections.push(section("Idiomas", `<ul class="inline">${model.languages.map(renderLanguage).join("")}</ul>`));
+    sections.push(section(t.languages, `<ul class="inline">${model.languages.map(renderLanguage).join("")}</ul>`));
   }
 
   if (model.interests.length > 0) {
@@ -84,16 +146,16 @@ export function renderResumeHtml(model: ResumeRenderModel): string {
     // section on the page, so they get one line and no more. (A flex list of
     // chips wrapped onto three rows and pushed real content off the page.)
     sections.push(
-      section("Intereses", `<p class="one-line">${model.interests.map((i) => esc(i)).join(", ")}</p>`),
+      section(t.interests, `<p class="one-line">${model.interests.map((i) => esc(i)).join(", ")}</p>`),
     );
   }
 
   return `<!doctype html>
-<html lang="es">
+<html lang="${t.locale}">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${esc(model.fullName)} — Currículum</title>
+<title>${esc(model.fullName)} — ${esc(t.documentKind)}</title>
 <style>${CSS}</style>
 </head>
 <body>
@@ -110,7 +172,7 @@ export function renderResumeHtml(model: ResumeRenderModel): string {
 }
 
 // ── Block renderers ──
-function renderExperience(e: GeneratedExperienceBlock): string {
+function renderExperience(e: GeneratedExperienceBlock, lang: ResumeLang): string {
   const heading = [e.title, e.organization].filter(Boolean).map((v) => esc(String(v))).join(" — ");
   /*
    * Most people this product serves have neither a job title nor an employer for
@@ -119,34 +181,38 @@ function renderExperience(e: GeneratedExperienceBlock): string {
    * "Experiencia" four times over and told a reader nothing, so the experience
    * TYPE they chose is the fallback: "Cuidado de personas", "Trabajo informal".
    */
-  const fallback = e.experienceType ? capitalizeFirst(labelForType(e.experienceType)) : "Experiencia";
+  const fallback = e.experienceType
+    ? capitalizeFirst(labelForType(e.experienceType, lang), lang)
+    : LABELS[lang].experienceFallback;
   return `<article class="entry">
     <div class="entry-head">
       <span class="entry-title">${heading || esc(fallback)}</span>
-      <span class="entry-dates">${esc(dateRange(e.startDate, e.endDate, e.isCurrent))}</span>
+      <span class="entry-dates">${esc(dateRange(e.startDate, e.endDate, e.isCurrent, lang))}</span>
     </div>
     ${e.location ? `<div class="entry-sub">${esc(e.location)}</div>` : ""}
     ${bullets(e.bullets.map((b) => b.text))}
   </article>`;
 }
 
-function renderEducation(e: GeneratedEducationBlock): string {
+function renderEducation(e: GeneratedEducationBlock, lang: ResumeLang): string {
   const headingText = [e.credential, e.fieldOfStudy].filter(Boolean).join(" — ");
-  const heading = headingText ? esc(headingText) : esc(e.institution ?? "Educación");
+  const heading = headingText ? esc(headingText) : esc(e.institution ?? LABELS[lang].educationFallback);
   /*
    * Drop a detail line that only repeats what the heading already says. Both
    * providers do this — the deterministic one builds its detail from exactly
    * `credential — fieldOfStudy` — and it renders as the same words twice, wasting a
    * line on a page that is budgeted to fit.
    */
-  const same = (a: string, b: string) => a.trim().toLocaleLowerCase("es") === b.trim().toLocaleLowerCase("es");
+  const locale = LABELS[lang].locale;
+  const same = (a: string, b: string) =>
+    a.trim().toLocaleLowerCase(locale) === b.trim().toLocaleLowerCase(locale);
   const details = e.details
     .map((b) => b.text)
     .filter((t) => !same(t, headingText) && !same(t, e.credential ?? "") && !same(t, e.institution ?? ""));
   return `<article class="entry">
     <div class="entry-head">
       <span class="entry-title">${heading}</span>
-      <span class="entry-dates">${esc(dateRange(e.startDate, e.endDate, e.isCurrent))}</span>
+      <span class="entry-dates">${esc(dateRange(e.startDate, e.endDate, e.isCurrent, lang))}</span>
     </div>
     ${e.institution ? `<div class="entry-sub">${esc(e.institution)}</div>` : ""}
     ${bullets(details)}
@@ -160,15 +226,15 @@ function renderProject(p: GeneratedProjectBlock): string {
   </article>`;
 }
 
-function renderSkillGroup(g: GeneratedSkillGroup): string {
+function renderSkillGroup(g: GeneratedSkillGroup, lang: ResumeLang): string {
   return `<div class="skill-group">
-    <span class="skill-cat">${esc(capitalizeFirst(g.category))}:</span>
+    <span class="skill-cat">${esc(capitalizeFirst(g.category, lang))}:</span>
     <span class="skill-list">${g.skills.map((s) => esc(s)).join(", ")}</span>
   </div>`;
 }
 
-function renderCertification(c: GeneratedCertificationBlock): string {
-  const meta = [c.issuingOrganization, capitalizeFirst(c.issueDate ?? "")]
+function renderCertification(c: GeneratedCertificationBlock, lang: ResumeLang): string {
+  const meta = [c.issuingOrganization, capitalizeFirst(c.issueDate ?? "", lang)]
     .filter(Boolean)
     .map((v) => esc(String(v)))
     .join(" · ");
@@ -204,9 +270,14 @@ function bullets(items: string[]): string {
  * range, and re-rendering "de 2015 a 2017" from a parsed value would silently drop
  * the 2017.
  */
-function dateRange(start: string | null, end: string | null, isCurrent: boolean): string {
-  const startText = capitalizeFirst(start?.trim() ?? "");
-  const endText = isCurrent ? CURRENT_DATE_LABEL : capitalizeFirst(end?.trim() ?? "");
+function dateRange(
+  start: string | null,
+  end: string | null,
+  isCurrent: boolean,
+  lang: ResumeLang = "es",
+): string {
+  const startText = capitalizeFirst(start?.trim() ?? "", lang);
+  const endText = isCurrent ? currentDateLabel(lang) : capitalizeFirst(end?.trim() ?? "", lang);
   if (startText && endText) return `${startText} – ${endText}`;
   return endText || startText;
 }
@@ -221,10 +292,10 @@ function dateRange(start: string | null, end: string | null, isCurrent: boolean)
  * touched: Spanish uses sentence case, so "atención al cliente" must not become
  * "Atención Al Cliente".
  */
-export function capitalizeFirst(value: string): string {
+export function capitalizeFirst(value: string, lang: ResumeLang = "es"): string {
   const text = value.trim();
   if (text.length === 0) return text;
-  return text.charAt(0).toLocaleUpperCase("es") + text.slice(1);
+  return text.charAt(0).toLocaleUpperCase(LABELS[lang].locale) + text.slice(1);
 }
 
 export function esc(value: string): string {

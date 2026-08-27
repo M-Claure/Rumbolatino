@@ -87,6 +87,16 @@ export function parseExperienceDate(text: string | null | undefined): {
 export const CURRENT_DATE_LABEL = "Actualidad";
 
 /**
+ * The same wording for a résumé rendered in another language.
+ *
+ * Only the renderer needs this — the funnel is Spanish-only, so `CURRENT_DATE_LABEL`
+ * stays the plain constant every other caller already imports.
+ */
+export function currentDateLabel(lang: "es" | "en" = "es"): string {
+  return lang === "en" ? "Present" : CURRENT_DATE_LABEL;
+}
+
+/**
  * "Still going on", in the words the funnel actually receives.
  *
  * Lives here rather than in `lib/resume/experience-order.ts` (which imports it)

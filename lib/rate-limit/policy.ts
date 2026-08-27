@@ -37,6 +37,8 @@ export type LimitedOperation =
   | "regenerate_section"
   /** Model-assisted capture: interests extraction, entry enrichment, skill suggestion. */
   | "assist"
+  /** Translating a finished résumé into another language. */
+  | "translate"
   /** Rendering the PDF. No tokens, but it launches Chromium. */
   | "export_pdf"
   /** Publishing (or re-publishing) a profile to the talent directory. */
@@ -133,6 +135,14 @@ export const LIMITS: Record<LimitedOperation, LimitRule> = {
     limit: 60,
     windowSeconds: HOUR,
     reason: "Small model calls attached to editing, so tied to typing speed rather than intent.",
+  },
+  translate: {
+    limit: 10,
+    windowSeconds: HOUR,
+    reason:
+      "Runs once per résumé, after finalize, and again only if the person changes " +
+      "the Spanish version and asks for a fresh translation. Ten covers retries and " +
+      "a few rounds of edit-then-re-translate; nobody needs an eleventh in an hour.",
   },
   export_pdf: {
     limit: 40,

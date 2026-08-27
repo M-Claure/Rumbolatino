@@ -11,8 +11,10 @@ import type {
   PersonalInformation,
   Project,
   QuestionState,
+  ResumeLang,
   ResumeProfile,
   Skill,
+  TranslatedResume,
   User,
 } from "@/types";
 import { Errors } from "@/lib/errors";
@@ -23,6 +25,7 @@ import {
   buildEducation,
   buildExperience,
   buildGeneratedResume,
+  buildTranslatedResume,
   buildLanguage,
   buildProfile,
   buildProject,
@@ -48,6 +51,7 @@ import type {
   IterationAnswerInput,
   PersonalInformationInput,
   QuestionStateInput,
+  SaveTranslatedResumeInput,
   Store,
   UpdateAchievementInput,
   UpdateCertificationInput,
@@ -637,6 +641,61 @@ export class SupabaseStore implements Store {
     return toResume(data as FunnelRow);
   }
 
+  // ── Translated résumé (the funnel row's resume_en_* columns) ──────────────
+  // Same reasoning as the résumé columns above: one translation per language per
+  // profile, so columns rather than a table joined 1:1.
+
+  async getTranslatedResume(
+    profileId: string,
+    language: ResumeLang,
+  ): Promise<TranslatedResume | null> {
+    const row = await this.fetchRow(profileId);
+    if (!row) return null;
+    return toTranslation(row, language);
+  }
+
+  async saveTranslatedResume(
+    profileId: string,
+    input: SaveTranslatedResumeInput,
+  ): Promise<TranslatedResume> {
+    // Through `mutateRow` for the same reason `createGeneratedResume` is: the
+    // write must not clobber a concurrent edit to the rest of the row.
+    return this.mutateRow(profileId, () => {
+      const translation = buildTranslatedResume(profileId, input);
+      return { patch: toTranslationColumns(translation), result: clone(translation) };
+    });
+  }
+
+  async updateTranslatedResume(
+    profileId: string,
+    language: ResumeLang,
+    patch: Partial<Pick<TranslatedResume, "pdfPath">>,
+  ): Promise<TranslatedResume> {
+    const columns = translationColumnNames(language);
+    const updates: Record<string, unknown> = {};
+    if (patch.pdfPath !== undefined) updates[columns.pdf] = patch.pdfPath;
+    /*
+     * Guarded on the translation actually existing (`source_version` is null until
+     * the first one), so a late PDF write for a translation that was never stored
+     * — or was stored under a different language — matches no row and throws.
+     * `revision` is deliberately not bumped: like the résumé's PDF path this
+     * records a derived artifact, and racing it against a real edit would fail the
+     * write the user cares about for the one they do not.
+     */
+    const { data, error } = await this.client
+      .from("funnel")
+      .update(updates)
+      .eq("id", profileId)
+      .not(columns.sourceVersion, "is", null)
+      .select("*")
+      .maybeSingle();
+    if (error) throw Errors.internal(error.message);
+    if (!data) throw Errors.notFound("Traducción no encontrada");
+    const saved = toTranslation(data as FunnelRow, language);
+    if (!saved) throw Errors.notFound("Traducción no encontrada");
+    return saved;
+  }
+
   // ── Improvement iterations ────────────────────────────────────────────────
 
   async getIteration(profileId: string): Promise<number> {
@@ -777,6 +836,87 @@ function toResume(row: any): GeneratedResume {
     html: row.resume_html ?? "",
     pdfPath: row.resume_pdf ?? null,
     createdAt: c.createdAt ?? row.updated_at,
+  };
+}
+
+/**
+ * Column names for one language's translation.
+ *
+ * Spanish is not a translation — it is the résumé itself, in `resume_*` — so this
+ * throws rather than inventing `resume_es_*` columns that do not exist. Adding a
+ * third language means adding its columns in a migration and a case here; the
+ * `Record<ResumeLang, …>` makes that a compile error rather than a silent null.
+ */
+function translationColumnNames(language: ResumeLang): {
+  content: string;
+  html: string;
+  pdf: string;
+  sourceVersion: string;
+  createdAt: string;
+} {
+  if (language === "es") {
+    throw Errors.internal("El español es el currículum original, no una traducción.");
+  }
+  return {
+    content: `resume_${language}_content`,
+    html: `resume_${language}_html`,
+    pdf: `resume_${language}_pdf`,
+    sourceVersion: `resume_${language}_source_version`,
+    createdAt: `resume_${language}_created_at`,
+  };
+}
+
+function toTranslationColumns(t: TranslatedResume): Record<string, unknown> {
+  const columns = translationColumnNames(t.language);
+  return {
+    [columns.content]: {
+      professionalSummary: t.professionalSummary,
+      skills: t.skills,
+      experience: t.experience,
+      education: t.education,
+      certifications: t.certifications,
+      projects: t.projects,
+      languages: t.languages,
+      headline: t.headline,
+      location: t.location,
+      interests: t.interests,
+    },
+    [columns.html]: t.html,
+    [columns.pdf]: t.pdfPath,
+    [columns.sourceVersion]: t.sourceVersion,
+    [columns.createdAt]: t.createdAt,
+  };
+}
+
+/**
+ * Null when this profile has never been translated into `language`.
+ *
+ * `source_version` is the existence flag, not the content: the content column
+ * defaults to `'{}'` and the html to `''`, so both are indistinguishable from a
+ * real-but-empty translation. A null source version cannot be produced by a save.
+ */
+function toTranslation(row: any, language: ResumeLang): TranslatedResume | null {
+  const columns = translationColumnNames(language);
+  const sourceVersion = row[columns.sourceVersion] as number | null | undefined;
+  if (sourceVersion == null) return null;
+  const c = (row[columns.content] ?? {}) as Record<string, any>;
+  return {
+    resumeProfileId: row.id,
+    language,
+    sourceVersion,
+    professionalSummary: c.professionalSummary ?? "",
+    skills: c.skills ?? [],
+    experience: c.experience ?? [],
+    education: c.education ?? [],
+    certifications: c.certifications ?? [],
+    projects: c.projects ?? [],
+    languages: c.languages ?? [],
+    headline: c.headline ?? null,
+    location: c.location ?? null,
+    interests: c.interests ?? [],
+    html: row[columns.html] ?? "",
+    pdfPath: row[columns.pdf] ?? null,
+    createdAt: row[columns.createdAt] ?? row.updated_at,
   };
 }
 

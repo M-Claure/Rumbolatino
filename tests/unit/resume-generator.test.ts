@@ -131,6 +131,7 @@ describe("generateResume — experience order and curation", () => {
       suggestSkills: async () => [],
       extractInterests: async () => ({ interests: [] }),
       proofreadResume: async () => ({ items: [], notes: [] }),
+      translateResume: async () => ({ items: [] }),
       analyzeResume: () => {
         throw new Error("unused");
       },
@@ -197,6 +198,7 @@ describe("generateResume — never surfaces invented facts", () => {
       suggestSkills: async () => [],
       extractInterests: async () => ({ interests: [] }),
       proofreadResume: async () => ({ items: [], notes: [] }),
+      translateResume: async () => ({ items: [] }),
       analyzeResume: () => {
         throw new Error("unused");
       },

@@ -19,8 +19,10 @@ import type {
   PersonalInformation,
   Project,
   QuestionState,
+  ResumeLang,
   ResumeProfile,
   Skill,
+  TranslatedResume,
   User,
 } from "@/types";
 
@@ -80,6 +82,18 @@ export type CreateConversationTurnInput = Partial<Data<ConversationTurn>> & {
 export type QuestionStateInput = Partial<Data<QuestionState>>;
 
 export type CreateGeneratedResumeInput = Partial<Data<GeneratedResume>>;
+
+/**
+ * A translation to store. `language` and `sourceVersion` are required because
+ * neither has a safe default: guessing the language would write the English
+ * document into the Spanish slot, and a missing `sourceVersion` would make a
+ * translation permanently look current.
+ */
+export type SaveTranslatedResumeInput = Partial<Data<TranslatedResume>> & {
+  language: ResumeLang;
+  sourceVersion: number;
+};
+
 
 export interface Store {
   // Users
@@ -182,6 +196,33 @@ export interface Store {
     id: string,
     patch: Partial<Pick<GeneratedResume, "pdfPath" | "html">>,
   ): Promise<GeneratedResume>;
+
+  // Translated resumes
+  /**
+   * The profile's translation into `language`, or null if it has never been
+   * translated. One per language, on the same `funnel` row.
+   *
+   * Callers compare its `sourceVersion` against the current résumé's `version` to
+   * decide whether it is still current; the store does not do that for them,
+   * because a stale translation is still the right thing to serve for a download
+   * the user asked for before improving their résumé.
+   */
+  getTranslatedResume(profileId: string, language: ResumeLang): Promise<TranslatedResume | null>;
+  /** Create or replace the profile's translation into `input.language`. */
+  saveTranslatedResume(
+    profileId: string,
+    input: SaveTranslatedResumeInput,
+  ): Promise<TranslatedResume>;
+  /**
+   * Patch the stored translation — in practice only to record its PDF path once
+   * the artifact writer has stored the object. Throws `notFound` when no
+   * translation exists, matching `updateGeneratedResume`.
+   */
+  updateTranslatedResume(
+    profileId: string,
+    language: ResumeLang,
+    patch: Partial<Pick<TranslatedResume, "pdfPath">>,
+  ): Promise<TranslatedResume>;
 
   // Improvement iterations
   /** Rounds of improvement completed so far, 0..MAX_RESUME_ITERATIONS. */

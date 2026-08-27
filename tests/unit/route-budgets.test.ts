@@ -46,6 +46,23 @@ describe("route time budgets", () => {
     expect(offenders).toEqual([]);
   });
 
+  /*
+   * Registering an operation in `LIMITS` / `PaidOperation` is compile-enforced, but
+   * nothing makes a route USE them — an unguarded paid route type-checks perfectly
+   * and simply costs money without a ceiling. These are the routes that spend
+   * tokens on a user action, so each must hit both guards.
+   */
+  it("guards every paid route with a rate limit AND a budget check", () => {
+    const paid = ["generate", "analyze", "proofread", "regenerate-section", "translate"];
+    for (const name of paid) {
+      const file = files.find((f) => f.includes(`/${name}/route.ts`));
+      expect(file, `no route found for ${name}`).toBeTruthy();
+      const src = readFileSync(file!, "utf8");
+      expect(src, `${name} is missing enforceRateLimit`).toMatch(/enforceRateLimit\(/);
+      expect(src, `${name} is missing assertWithinBudget`).toMatch(/assertWithinBudget\(/);
+    }
+  });
+
   it("keeps every PDF-rendering route on the Node.js runtime", () => {
     const rendering = files.filter((f) => /getPdfGenerator|resumeArtifacts/.test(readFileSync(f, "utf8")));
     expect(rendering.length).toBeGreaterThan(0);

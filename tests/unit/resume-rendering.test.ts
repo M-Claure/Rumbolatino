@@ -233,6 +233,114 @@ describe("experience dates are shown", () => {
   });
 });
 
+/*
+ * The renderer is the half of the English résumé the model never sees: headings,
+ * the document language and the fallback labels are code, not translated prose.
+ * If they leak Spanish, the person downloads English bullets under Spanish
+ * headings — which is exactly what a translation feature is expected not to do.
+ */
+describe("rendering in English", () => {
+  const full = model({
+    interests: ["Football"],
+    skills: [{ category: "sales", skills: ["Cashier"], sourceSkillIds: [] }],
+    experience: [
+      {
+        entryId: "e1",
+        title: "Sales Assistant",
+        organization: "La Esperanza Bakery",
+        location: null,
+        startDate: "March 2020",
+        endDate: null,
+        isCurrent: true,
+        bullets: [{ text: "Served customers.", sourceEntryIds: ["e1"], sourceFields: [] }],
+      },
+    ],
+    education: [
+      {
+        entryId: "d1",
+        institution: "Benito Juárez School",
+        credential: "High School Diploma",
+        fieldOfStudy: null,
+        startDate: null,
+        endDate: null,
+        isCurrent: false,
+        details: [],
+      },
+    ],
+    certifications: [{ entryId: "c1", name: "Excel Course", issuingOrganization: "Aprende", issueDate: null }],
+    projects: [{ entryId: "p1", name: "Market stall", bullets: [] }],
+    languages: [{ entryId: "l1", name: "Spanish", level: "Native" }],
+  });
+
+  it("declares the document language so screen readers and PDF metadata agree", () => {
+    expect(renderResumeHtml(full, "en")).toContain('<html lang="en">');
+    expect(renderResumeHtml(full)).toContain('<html lang="es">');
+  });
+
+  it("prints every section heading in English and none in Spanish", () => {
+    const html = renderResumeHtml(full, "en");
+    for (const heading of [
+      "Professional Summary",
+      "Experience",
+      "Education",
+      "Skills",
+      "Projects",
+      "Certifications",
+      "Languages",
+      "Interests",
+    ]) {
+      expect(html).toContain(`<h2>${heading}</h2>`);
+    }
+    for (const heading of [
+      "Resumen profesional",
+      "Experiencia",
+      "Educación",
+      "Habilidades",
+      "Proyectos",
+      "Certificaciones",
+      "Idiomas",
+      "Intereses",
+    ]) {
+      expect(html).not.toContain(`<h2>${heading}</h2>`);
+    }
+  });
+
+  it("titles the document a Resume rather than a Currículum", () => {
+    expect(renderResumeHtml(full, "en")).toContain("María García — Resume</title>");
+    expect(renderResumeHtml(full)).toContain("María García — Currículum</title>");
+  });
+
+  it("says Present, not Actualidad, for an ongoing experience", () => {
+    const html = renderResumeHtml(full, "en");
+    expect(html).toContain("March 2020 – Present");
+    expect(html).not.toContain("Actualidad");
+  });
+
+  /*
+   * The heading fallback for an entry with no title and no employer — the norm for
+   * this product's users, so it is the label most likely to be seen.
+   */
+  it("falls back to the English experience-type label", () => {
+    const untitled: ResumeRenderModel["experience"][number] = {
+      entryId: "e2",
+      title: null,
+      organization: null,
+      location: null,
+      startDate: null,
+      endDate: null,
+      isCurrent: false,
+      bullets: [{ text: "Cared for my grandmother.", sourceEntryIds: ["e2"], sourceFields: [] }],
+      experienceType: "caregiving" as ExperienceType,
+    };
+    expect(renderResumeHtml(model({ experience: [untitled] }), "en")).toContain("Caregiving");
+    expect(renderResumeHtml(model({ experience: [untitled] }))).toContain("Cuidado de personas");
+  });
+
+  it("leaves Spanish rendering byte-identical when no language is passed", () => {
+    expect(renderResumeHtml(full)).toBe(renderResumeHtml(full, "es"));
+  });
+});
+
 describe("the sheet matches the printed page", () => {
   const html = renderResumeHtml(model());
 

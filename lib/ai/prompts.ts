@@ -17,8 +17,18 @@ import type {
   ResumeGenerationInput,
   SuggestSkillsParams,
 } from "./provider";
+import type { ResumeLang } from "@/types";
 
-export const SYSTEM_FACTUALITY = `Eres el asistente de "Mi CV con IA", una herramienta en español que ayuda a personas a crear un currículum profesional y honesto.
+/**
+ * The truthfulness rules, without the output-language line.
+ *
+ * Split out so the translation pass can keep every factuality guarantee while
+ * replacing exactly one rule — "Responde SIEMPRE en español", which a translation
+ * obviously has to override. Composing the two exports below from a shared body is
+ * what stops the rules drifting apart: a new prohibition added here applies to the
+ * English résumé automatically.
+ */
+const FACTUALITY_RULES = `Eres el asistente de "Mi CV con IA", una herramienta en español que ayuda a personas a crear un currículum profesional y honesto.
 
 REGLAS DE VERACIDAD (obligatorias, sin excepciones):
 - Usa ÚNICAMENTE hechos que la persona haya proporcionado o confirmado.
@@ -34,9 +44,28 @@ REGLAS DE VERACIDAD (obligatorias, sin excepciones):
 - No hagas promesas ni garantías de empleo.
 - Evita lenguaje discriminatorio o inapropiado.
 
-FORMATO:
+FORMATO:`;
+
+const JSON_FORMAT_RULE =
+  "- Cuando se te pida JSON, devuelve EXCLUSIVAMENTE JSON válido que cumpla el esquema indicado. Sin texto adicional, sin markdown, sin comentarios, sin código ejecutable ni HTML.";
+
+/** The system block on every call that writes Spanish — i.e. everything but translation. */
+export const SYSTEM_FACTUALITY = `${FACTUALITY_RULES}
 - Responde SIEMPRE en español para los textos dirigidos a la persona.
-- Cuando se te pida JSON, devuelve EXCLUSIVAMENTE JSON válido que cumpla el esquema indicado. Sin texto adicional, sin markdown, sin comentarios, sin código ejecutable ni HTML.`;
+${JSON_FORMAT_RULE}`;
+
+/**
+ * The same rules for the translation pass.
+ *
+ * Only the output-language rule changes. Everything else must hold harder here
+ * than anywhere else: the model is looking at a finished, source-traced résumé,
+ * and a "helpful" embellishment during translation would put a claim in the
+ * English document that the Spanish one never made — and that nothing traced.
+ */
+export const SYSTEM_FACTUALITY_TRANSLATION = `${FACTUALITY_RULES}
+- Este encargo es una TRADUCCIÓN: el texto que devuelvas va en el idioma de destino que indique la tarea, NO en español.
+- Traducir no es reescribir. No mejores, no amplíes, no resumas y no agregues nada que el texto original no diga.
+${JSON_FORMAT_RULE}`;
 
 const JSON_ONLY = "Devuelve EXCLUSIVAMENTE un objeto JSON válido, sin texto adicional ni markdown.";
 
@@ -278,6 +307,49 @@ ${JSON.stringify(params.items, null, 0)}
 
 ${JSON_ONLY} Debe cumplir el esquema: { "items": [{ "id": "…", "text": "…" }], "notes": ["…"] }.`;
 }
+
+/**
+ * The translation task rules — stable across every call, so they ride in
+ * `instructions` and form a cacheable prefix (see the note on `normalizeAnswer`).
+ * Only the id-keyed items vary, and they go in `input`.
+ *
+ * Two things this prompt does NOT have to police, because the caller simply never
+ * sends them: employer and institution names, and the person's own name. Not
+ * sending a proper noun is a stronger guarantee than asking a model to leave it
+ * alone — see `collectTranslatableItems` in lib/resume/translate-resume.ts.
+ */
+export function buildTranslationSystemPrompt(targetLanguage: ResumeLang): string {
+  const target = TARGET_LANGUAGE_NAMES[targetLanguage];
+  return `Eres un traductor profesional especializado en currículums. Recibes fragmentos de un currículum YA redactado y aprobado por la persona, cada uno con un "id".
+
+Tu tarea: traducir cada fragmento al ${target}, con la naturalidad de un currículum escrito originalmente en ese idioma.
+
+REGLAS ESTRICTAS:
+- Devuelve CADA fragmento con su MISMO "id". No omitas ninguno, no inventes ids nuevos, no cambies el orden.
+- NO agregues información. NO quites información. NO "mejores" los logros ni añadas métricas, herramientas o responsabilidades que no estén en el original.
+- Conserva las cantidades aproximadas tal cual ("aproximadamente 20" → "approximately 20"; nunca "20").
+- Conserva los números, cifras, porcentajes y fechas exactamente como están.
+- Traduce los puestos de trabajo y los títulos académicos a su equivalente reconocible en ${target}. Si un título no tiene equivalente exacto, tradúcelo literalmente en lugar de sustituirlo por otro título que signifique algo distinto (p.ej. "Licenciatura en Contaduría" → "Bachelor's Degree in Accounting", nunca "CPA").
+- Los nombres de meses y las fechas en texto se traducen ("marzo 2020" → "March 2020"; "Actualidad" → "Present").
+- Los topónimos usan su nombre habitual en ${target} cuando existe ("Ciudad de México" → "Mexico City"); si no existe, déjalos tal cual.
+- NO traduzcas nombres propios de personas, empresas, marcas ni productos.
+- Si un fragmento ya está en ${target} o no requiere traducción (p.ej. "Excel", "SAP"), devuélvelo igual.
+
+${JSON_ONLY} Debe cumplir el esquema: { "items": [{ "id": "…", "text": "…" }] }.`;
+}
+
+/** The variable half of the translation call: just the id-keyed fragments. */
+export function buildTranslationPrompt(params: {
+  items: Array<{ id: string; text: string }>;
+}): string {
+  return `Fragmentos a traducir:
+${JSON.stringify(params.items, null, 0)}`;
+}
+
+const TARGET_LANGUAGE_NAMES: Record<ResumeLang, string> = {
+  es: "español",
+  en: "inglés",
+};
 
 function guidelinesBlock(guidelines?: string): string {
   if (!guidelines || guidelines.trim().length === 0) return "";

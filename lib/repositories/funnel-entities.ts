@@ -28,6 +28,7 @@ import type {
   QuestionState,
   ResumeProfile,
   Skill,
+  TranslatedResume,
 } from "@/types";
 import type {
   CreateAchievementInput,
@@ -40,6 +41,7 @@ import type {
   CreateProfileInput,
   CreateProjectInput,
   CreateSkillInput,
+  SaveTranslatedResumeInput,
 } from "./store";
 
 export const nowIso = (): string => new Date().toISOString();
@@ -264,6 +266,36 @@ export function buildGeneratedResume(
     certifications: input.certifications ?? [],
     projects: input.projects ?? [],
     languages: input.languages ?? [],
+    html: input.html ?? "",
+    pdfPath: input.pdfPath ?? null,
+    createdAt: nowIso(),
+  };
+}
+
+/**
+ * Shared so `MemoryStore` and `SupabaseStore` cannot drift on defaults — the same
+ * reason `buildGeneratedResume` lives here. Note there is no `id`: a translation is
+ * addressed by (profile, language), and minting one would imply a history it does
+ * not keep.
+ */
+export function buildTranslatedResume(
+  profileId: string,
+  input: SaveTranslatedResumeInput,
+): TranslatedResume {
+  return {
+    resumeProfileId: profileId,
+    language: input.language,
+    sourceVersion: input.sourceVersion,
+    professionalSummary: input.professionalSummary ?? "",
+    skills: input.skills ?? [],
+    experience: input.experience ?? [],
+    education: input.education ?? [],
+    certifications: input.certifications ?? [],
+    projects: input.projects ?? [],
+    languages: input.languages ?? [],
+    headline: input.headline ?? null,
+    location: input.location ?? null,
+    interests: input.interests ?? [],
     html: input.html ?? "",
     pdfPath: input.pdfPath ?? null,
     createdAt: nowIso(),

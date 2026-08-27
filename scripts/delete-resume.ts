@@ -145,7 +145,7 @@ Opciones
 
 const FUNNEL_COLUMNS =
   "id, user_id, status, target_role, created_at, updated_at, iteration, " +
-  "resume_id, resume_version, resume_stage, resume_pdf, finalized_at, personal_information";
+  "resume_id, resume_version, resume_stage, resume_pdf, resume_en_pdf, finalized_at, personal_information";
 
 interface FunnelRow {
   id: string;
@@ -159,6 +159,7 @@ interface FunnelRow {
   resume_version: number | null;
   resume_stage: number | null;
   resume_pdf: string | null;
+  resume_en_pdf: string | null;
   finalized_at: string | null;
   personal_information: Record<string, unknown> | null;
 }
@@ -358,6 +359,7 @@ async function listStoragePaths(admin: SupabaseClient, row: FunnelRow): Promise<
     for (const stage of [0, 1, 2, 3]) {
       paths.add(resumePdfPath({ userId: row.user_id, profileId: row.id, stage }));
     }
+    paths.add(resumePdfPath({ userId: row.user_id, profileId: row.id, lang: "en" }));
   } else {
     for (const object of data ?? []) {
       if (object.name) paths.add(`${folder}/${object.name}`);
@@ -366,6 +368,7 @@ async function listStoragePaths(admin: SupabaseClient, row: FunnelRow): Promise<
 
   // Whatever the row itself points at, even if it sits somewhere unexpected.
   if (row.resume_pdf) paths.add(row.resume_pdf);
+  if (row.resume_en_pdf) paths.add(row.resume_en_pdf);
   return [...paths];
 }
 

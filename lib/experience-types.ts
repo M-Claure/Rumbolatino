@@ -1,4 +1,4 @@
-import type { ExperienceType } from "@/types";
+import type { ExperienceType, ResumeLang } from "@/types";
 
 /**
  * Spanish labels for each experience type, and helpers shared by the funnel UI,
@@ -37,8 +37,34 @@ const LABELS: Record<ExperienceType, string> = {
   other: "experiencia",
 };
 
+/**
+ * English labels, used ONLY by the résumé renderer when producing an English
+ * document (`lib/resume/translate-resume.ts`). The funnel and every other reader
+ * stays Spanish, which is why the Spanish map above remains the default.
+ *
+ * These are heading fallbacks for an entry with neither a job title nor an
+ * employer — the norm for this product's users — so they read as résumé section
+ * headings rather than as sentence fragments: "Caregiving", not "caring for
+ * people".
+ */
+const LABELS_EN: Record<ExperienceType, string> = {
+  formal_employment: "employment",
+  self_employment: "self-employment",
+  business_owner: "business owner",
+  freelance: "freelance work",
+  informal_work: "informal work",
+  family_business: "family business",
+  volunteering: "volunteering",
+  internship: "internship",
+  school_project: "school project",
+  caregiving: "caregiving",
+  personal_project: "personal project",
+  other: "experience",
+};
+
 /** Human, lowercase label for a type (used mid-sentence, e.g. "tu voluntariado"). */
-export function labelForType(type: ExperienceType): string {
+export function labelForType(type: ExperienceType, lang: ResumeLang = "es"): string {
+  if (lang === "en") return LABELS_EN[type] ?? "experience";
   return LABELS[type] ?? "experiencia";
 }
 

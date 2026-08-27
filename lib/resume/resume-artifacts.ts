@@ -1,4 +1,4 @@
-import type { GeneratedResume } from "@/types";
+import type { GeneratedResume, TranslatedResume } from "@/types";
 import type { Analytics } from "@/lib/analytics";
 import type { PdfGenerator } from "@/lib/resume/pdf-generator";
 import type { ResumeFileStore, ResumeRowUpdater } from "@/lib/storage/resume-file-store";
@@ -43,6 +43,17 @@ export interface ResumeArtifactWriter {
    * outcome than a missing cached file that the download path re-renders anyway.
    */
   onResumeCreated(resume: GeneratedResume): Promise<GeneratedResume>;
+  /**
+   * The same, for a freshly created translation. Same best-effort contract:
+   * returns the translation with `pdfPath` populated on success, unchanged on
+   * failure, and **never throws**.
+   *
+   * A separate method rather than a `lang` flag on the one above because the two
+   * write different rows and obey different history rules — a résumé PDF is per
+   * improvement round and stamps `iteration_N`, a translation PDF is one object
+   * that a re-translate overwrites and stamps nothing.
+   */
+  onTranslationCreated(translation: TranslatedResume): Promise<TranslatedResume>;
 }
 
 export interface ResumePdfWriterDeps {
@@ -140,6 +151,67 @@ export function createResumePdfWriter(deps: ResumePdfWriterDeps): ResumeArtifact
           err,
         );
         return resume;
+      }
+    },
+
+    async onTranslationCreated(translation: TranslatedResume): Promise<TranslatedResume> {
+      if (!translation.html.trim()) return translation;
+
+      // Same deadline reasoning as above, and the same self-healing fallback:
+      // `POST /export-pdf?lang=…` re-renders and back-fills on first download.
+      const needMs = renderedInThisProcess ? PDF_WARM_MS : PDF_COLD_MS;
+      const leftMs = deadline.remainingMs();
+      if (leftMs < needMs) {
+        console.warn(
+          `[resume-artifacts] skipping ${translation.language} PDF for profile ` +
+            `${translation.resumeProfileId}: ${leftMs}ms left, ~${needMs}ms needed. ` +
+            "The download path will render and back-fill it.",
+        );
+        analytics?.track(
+          "resume_pdf_skipped",
+          {
+            resumeProfileId: translation.resumeProfileId,
+            version: translation.sourceVersion,
+            language: translation.language,
+          },
+          userId,
+        );
+        return translation;
+      }
+
+      try {
+        const bytes = await pdf.generate(translation.html);
+        renderedInThisProcess = true;
+        const path = await files.putResumePdf({
+          userId,
+          profileId: translation.resumeProfileId,
+          // No `stage`: a translation mirrors the current résumé and keeps no
+          // per-round history, so it is one object per language.
+          lang: translation.language,
+          pdf: bytes,
+        });
+        const updated = await store.updateTranslatedResume(
+          translation.resumeProfileId,
+          translation.language,
+          { pdfPath: path },
+        );
+        analytics?.track(
+          "resume_pdf_stored",
+          {
+            resumeProfileId: translation.resumeProfileId,
+            version: translation.sourceVersion,
+            language: translation.language,
+          },
+          userId,
+        );
+        return updated;
+      } catch (err) {
+        console.error(
+          `[resume-artifacts] failed to store ${translation.language} PDF for profile ` +
+            `${translation.resumeProfileId} (source version ${translation.sourceVersion}):`,
+          err,
+        );
+        return translation;
       }
     },
   };

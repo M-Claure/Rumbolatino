@@ -7,10 +7,12 @@ import type {
   CompletenessReport,
   GeneratedResume,
   PersonalInformation,
+  ResumeLang,
   ResumeProfile,
   ResumeProfileState,
   Skill,
   TalentProfileStatus,
+  TranslatedResume,
 } from "@/types";
 
 /** What the publish popup needs. Mirrors `PublishDefaults` on the server. */
@@ -271,9 +273,30 @@ export const api = {
   reopen: (id: string) =>
     req<{ profile: ResumeProfile }>(`/api/resume-profiles/${id}/finalize`, { method: "DELETE" }),
 
+  /**
+   * The stored English translation and whether it still matches the current
+   * résumé. Free — no model call — so it is safe to call on every workspace load.
+   */
+  getTranslation: (id: string) =>
+    req<{ translation: TranslatedResume | null; current: boolean }>(
+      `/api/resume-profiles/${id}/translate`,
+    ),
+
+  /**
+   * Translate the finished résumé into English. Costs a model call, so this is
+   * only ever called from an explicit user action — never to refresh a stale
+   * translation automatically.
+   */
+  translate: (id: string) =>
+    req<{ translation: TranslatedResume; current: boolean }>(
+      `/api/resume-profiles/${id}/translate`,
+      { method: "POST" },
+    ),
+
   /** Download the PDF as a Blob (POST). Throws ApiError (e.g. not_ready) on failure. */
-  downloadPdf: async (id: string): Promise<Blob> => {
-    const res = await fetch(`/api/resume-profiles/${id}/export-pdf`, { method: "POST" });
+  downloadPdf: async (id: string, lang: ResumeLang = "es"): Promise<Blob> => {
+    const query = lang === "es" ? "" : `?lang=${lang}`;
+    const res = await fetch(`/api/resume-profiles/${id}/export-pdf${query}`, { method: "POST" });
     if (!res.ok) {
       const json = (await res.json().catch(() => null)) as
         | { error?: { code?: string; message?: string; details?: unknown } }

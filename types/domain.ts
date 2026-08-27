@@ -87,6 +87,17 @@ export type ProficiencyLevel = (typeof PROFICIENCY_LEVELS)[number];
 export const LANGUAGE_LEVELS = ["basico", "intermedio", "avanzado", "nativo"] as const;
 export type LanguageLevel = (typeof LANGUAGE_LEVELS)[number];
 
+/**
+ * The languages a rendered résumé can be written in.
+ *
+ * Not to be confused with `LANGUAGE_LEVELS` above, which is about languages the
+ * USER speaks — a captured résumé section. This is the language of the DOCUMENT.
+ * The product is Spanish-first: "es" is what the funnel produces, and "en" is a
+ * translation of a finished Spanish résumé (see `lib/resume/translate-resume.ts`).
+ */
+export const RESUME_LANGUAGES = ["es", "en"] as const;
+export type ResumeLang = (typeof RESUME_LANGUAGES)[number];
+
 export const PROJECT_TYPES = [
   "personal",
   "academic",
@@ -364,6 +375,67 @@ export interface GeneratedResume {
    * One object per `stage`, so a profile holds up to four: the initial
    * `curriculum.pdf` plus `iteration-1..3.pdf`. Within a stage every generation
    * replaces the object. See `lib/storage/resume-file-store.ts`.
+   */
+  pdfPath: string | null;
+  createdAt: string;
+}
+
+/**
+ * A finished résumé rendered in another language.
+ *
+ * It is a TRANSLATION of `GeneratedResume`, never an independent generation: the
+ * same blocks, the same `entryId`s and the same source traces, with only the prose
+ * and the human-readable labels swapped. That is what guarantees the two documents
+ * say the same thing, and it is why no new fact can appear in one and not the
+ * other — the model is never shown the source data, only the résumé it already
+ * wrote.
+ *
+ * Stored as parallel columns on the `funnel` row (0010), following the precedent
+ * 0008 set when it collapsed `resume_pdfs` into columns: there is exactly one
+ * translation per language per profile, so a table would be a 1:1 join in every
+ * path that touched it.
+ */
+export interface TranslatedResume {
+  resumeProfileId: string;
+  language: ResumeLang;
+  /**
+   * The `GeneratedResume.version` this was translated from.
+   *
+   * This is the staleness check, and the reason a translation is not silently
+   * regenerated: when the Spanish résumé moves ahead (a regenerate, a proofread,
+   * an edit) this trails `resume.version` and the UI offers to re-translate rather
+   * than spending a model call nobody asked for.
+   */
+  sourceVersion: number;
+  professionalSummary: string;
+  skills: GeneratedSkillGroup[];
+  experience: GeneratedExperienceBlock[];
+  education: GeneratedEducationBlock[];
+  certifications: GeneratedCertificationBlock[];
+  projects: GeneratedProjectBlock[];
+  languages: GeneratedLanguageBlock[];
+  /*
+   * The three strings the document prints that do NOT live on `GeneratedResume`.
+   *
+   * `renderResumeHtml` assembles its model from the résumé PLUS the profile
+   * (`targetRole`/`careerGoal`, `interests`) and the personal-information row
+   * (city/state/country). Those are Spanish too, so a translation that stored only
+   * the résumé blocks would render an English document under a Spanish job title.
+   * The person's NAME and contact details are deliberately not here — they are
+   * proper nouns and are re-read untranslated at render time.
+   */
+  /** Translated `targetRole ?? careerGoal` — the line under the name. */
+  headline: string | null;
+  /** Translated city/state/country line. */
+  location: string | null;
+  /** Translated interests. */
+  interests: string[];
+  html: string;
+  /**
+   * Storage object path of this translation's saved PDF, or null if none was
+   * stored. ONE object per language — unlike the Spanish résumé there is no
+   * per-round history, because a translation only ever mirrors the current
+   * résumé. See `lib/storage/resume-file-store.ts`.
    */
   pdfPath: string | null;
   createdAt: string;

@@ -14,8 +14,10 @@ import type {
   PersonalInformation,
   Project,
   QuestionState,
+  ResumeLang,
   ResumeProfile,
   Skill,
+  TranslatedResume,
   User,
 } from "@/types";
 import { Errors } from "@/lib/errors";
@@ -26,6 +28,7 @@ import {
   buildEducation,
   buildExperience,
   buildGeneratedResume,
+  buildTranslatedResume,
   buildLanguage,
   buildProfile,
   buildProject,
@@ -52,6 +55,7 @@ import type {
   IterationAnswer,
   IterationAnswerInput,
   QuestionStateInput,
+  SaveTranslatedResumeInput,
   Store,
   UpdateAchievementInput,
   UpdateCertificationInput,
@@ -62,6 +66,10 @@ import type {
   UpdateProjectInput,
   UpdateSkillInput,
 } from "./store";
+
+/** Composite key for the per-language translation map. */
+const translationKey = (profileId: string, language: ResumeLang): string =>
+  `${profileId}:${language}`;
 
 export class MemoryStore implements Store {
   private users = new Map<string, User>();
@@ -81,6 +89,11 @@ export class MemoryStore implements Store {
    * résumé, mirroring the `funnel.resume_*` columns the Supabase store writes.
    */
   private resumes = new Map<string, GeneratedResume>();
+  /**
+   * Keyed `<profileId>:<language>` — one translation per language per profile,
+   * mirroring the `funnel.resume_en_*` columns.
+   */
+  private translations = new Map<string, TranslatedResume>();
   private iterations = new Map<string, number>();
   private iterationAnswers = new Map<string, IterationAnswer>();
 
@@ -100,6 +113,7 @@ export class MemoryStore implements Store {
       this.turns,
       this.questionStates,
       this.resumes,
+      this.translations,
       this.iterations,
       this.iterationAnswers,
     ]) {
@@ -399,6 +413,32 @@ export class MemoryStore implements Store {
     if (!existing) throw Errors.notFound("Currículum generado no encontrado");
     const updated = { ...existing, ...stripUndefined(patch) };
     this.resumes.set(existing.resumeProfileId, updated);
+    return clone(updated);
+  }
+
+  // ── Translated resumes ──
+  // One per profile per language — the `funnel.resume_en_*` columns.
+  async getTranslatedResume(profileId: string, language: ResumeLang): Promise<TranslatedResume | null> {
+    return clone(this.translations.get(translationKey(profileId, language)) ?? null);
+  }
+  async saveTranslatedResume(
+    profileId: string,
+    input: SaveTranslatedResumeInput,
+  ): Promise<TranslatedResume> {
+    const translation = buildTranslatedResume(profileId, input);
+    this.translations.set(translationKey(profileId, input.language), translation);
+    return clone(translation);
+  }
+  async updateTranslatedResume(
+    profileId: string,
+    language: ResumeLang,
+    patch: Partial<Pick<TranslatedResume, "pdfPath">>,
+  ): Promise<TranslatedResume> {
+    const key = translationKey(profileId, language);
+    const existing = this.translations.get(key);
+    if (!existing) throw Errors.notFound("Traducción no encontrada");
+    const updated = { ...existing, ...stripUndefined(patch) };
+    this.translations.set(key, updated);
     return clone(updated);
   }
 

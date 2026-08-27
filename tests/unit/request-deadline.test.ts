@@ -75,6 +75,9 @@ describe("the PDF writer under a deadline", () => {
         updateGeneratedResume: async (_id: string, patch: { pdfPath?: string }) =>
           ({ ...resume, pdfPath: patch.pdfPath }) as GeneratedResume,
         setIterationResumePdf: async () => {},
+        updateTranslatedResume: async () => {
+          throw new Error("not used in these tests");
+        },
       },
       pdf: {
         // `available` exists on this repo's PdfGenerator and not the other's —

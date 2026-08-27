@@ -56,6 +56,7 @@ describe("resume guidelines", () => {
       suggestSkills: async () => [],
       extractInterests: async () => ({ interests: [] }),
       proofreadResume: async () => ({ items: [], notes: [] }),
+      translateResume: async () => ({ items: [] }),
       analyzeResume: () => {
         throw new Error("unused");
       },

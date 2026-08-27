@@ -13,6 +13,7 @@ import type {
   ProofreadResumeParams,
   ResumeGenerationInput,
   SuggestSkillsParams,
+  TranslateResumeParams,
 } from "./provider";
 import {
   AnswerNormalizationSchema,
@@ -22,6 +23,7 @@ import {
   ResumeAnalysisSchema,
   ResumeContentSchema,
   SuggestedSkillSchema,
+  TranslationResultSchema,
   type AnswerNormalization,
   type InterestsExtraction,
   type PlannerDecision,
@@ -29,9 +31,11 @@ import {
   type ResumeAnalysisPayload,
   type ResumeContent,
   type SuggestedSkillPayload,
+  type TranslationResult,
 } from "./schemas";
 import {
   SYSTEM_FACTUALITY,
+  SYSTEM_FACTUALITY_TRANSLATION,
   buildAnalysisPrompt,
   buildInterestsExtractionPrompt,
   buildNormalizerSystemPrompt,
@@ -40,6 +44,8 @@ import {
   buildProofreadPrompt,
   buildResumeGenerationPrompt,
   buildSkillSuggestionPrompt,
+  buildTranslationPrompt,
+  buildTranslationSystemPrompt,
 } from "./prompts";
 
 /**
@@ -222,7 +228,7 @@ export class AzureOpenAIProvider implements AIProvider {
       2048,
       "normalize-answer",
       MECHANICAL,
-      buildNormalizerSystemPrompt(params.section),
+      { stableInstructions: buildNormalizerSystemPrompt(params.section) },
     );
   }
 
@@ -248,6 +254,35 @@ export class AzureOpenAIProvider implements AIProvider {
     return this.callJson(buildProofreadPrompt(params), ProofreadResultSchema, 8000, "proofread-resume", MECHANICAL);
   }
 
+  async translateResume(params: TranslateResumeParams): Promise<TranslationResult> {
+    /*
+     * MECHANICAL, like proofreading and for the same reason: there is no judgement
+     * to make. The résumé is already written, already source-traced and already
+     * approved by the person — this call swaps one language for another over text
+     * that exists. Reasoning tokens bill at the OUTPUT rate ($10/1M) and are
+     * discarded unread, so buying "thinking" here would multiply the cost of the
+     * cheapest useful thing the product does.
+     *
+     * The task rules go in `stableInstructions` so the ~700-token prefix caches at
+     * a tenth of the input rate; only the fragments vary between calls. Two
+     * translations of the same résumé (a re-translate after an edit) therefore
+     * share almost their entire input.
+     */
+    return this.callJson(
+      buildTranslationPrompt(params),
+      TranslationResultSchema,
+      8000,
+      "translate-resume",
+      MECHANICAL,
+      {
+        stableInstructions: buildTranslationSystemPrompt(params.targetLanguage),
+        // The default block orders the model to answer in Spanish, which is the one
+        // rule a translation must not follow. Everything else about it still applies.
+        system: SYSTEM_FACTUALITY_TRANSLATION,
+      },
+    );
+  }
+
   // ── internals ──
   private async callJson<S extends z.ZodTypeAny>(
     prompt: string,
@@ -255,12 +290,22 @@ export class AzureOpenAIProvider implements AIProvider {
     maxTokens: number,
     label: string,
     budget: CallBudget,
-    /**
-     * Task instructions that do NOT vary with the input, appended to the factuality
-     * rules. Kept separate from `prompt` so the stable text forms a cacheable prefix.
-     */
-    stableInstructions?: string,
+    options: {
+      /**
+       * Task instructions that do NOT vary with the input, appended to the factuality
+       * rules. Kept separate from `prompt` so the stable text forms a cacheable prefix.
+       */
+      stableInstructions?: string;
+      /**
+       * Replaces the default factuality block. Only translation needs this — its
+       * output is not Spanish, and `SYSTEM_FACTUALITY` mandates that it is. Any
+       * replacement must still carry the truthfulness rules; compose it from
+       * `FACTUALITY_RULES` in prompts.ts rather than writing a fresh one.
+       */
+      system?: string;
+    } = {},
   ): Promise<z.infer<S>> {
+    const { stableInstructions, system = SYSTEM_FACTUALITY } = options;
     let lastError: unknown;
     let truncations = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -292,9 +337,7 @@ export class AzureOpenAIProvider implements AIProvider {
           model: this.model,
           // Stable text first (factuality rules, then task instructions), variable
           // input last — the order prompt caching needs.
-          instructions: stableInstructions
-            ? `${SYSTEM_FACTUALITY}\n\n${stableInstructions}`
-            : SYSTEM_FACTUALITY,
+          instructions: stableInstructions ? `${system}\n\n${stableInstructions}` : system,
           input: content,
           max_output_tokens: attemptMaxTokens,
           reasoning: { effort: budget.effort },

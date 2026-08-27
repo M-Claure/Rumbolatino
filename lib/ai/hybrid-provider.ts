@@ -9,6 +9,7 @@ import type {
   ProofreadResumeParams,
   ResumeGenerationInput,
   SuggestSkillsParams,
+  TranslateResumeParams,
 } from "./provider";
 import type {
   AnswerNormalization,
@@ -18,6 +19,7 @@ import type {
   ResumeAnalysisPayload,
   ResumeContent,
   SuggestedSkillPayload,
+  TranslationResult,
 } from "./schemas";
 
 /**
@@ -130,5 +132,15 @@ export class HybridAIProvider implements AIProvider {
 
   proofreadResume(params: ProofreadResumeParams): Promise<ProofreadResult> {
     return this.capable.proofreadResume(params);
+  }
+
+  /*
+   * Model, always. The deterministic provider cannot translate — it would hand back
+   * the Spanish text unchanged, and the user would download a "English résumé" that
+   * is entirely in Spanish. A translation is also explicitly requested and paid for
+   * by a user action, unlike the funnel capture this class exists to make cheap.
+   */
+  translateResume(params: TranslateResumeParams): Promise<TranslationResult> {
+    return this.capable.translateResume(params);
   }
 }

@@ -79,6 +79,24 @@ export const ProofreadResultSchema = z.object({
 });
 export type ProofreadResult = z.infer<typeof ProofreadResultSchema>;
 
+/**
+ * One translation pass over a finished résumé. Same id-keyed contract as
+ * proofreading — text in, text out, no structural change — and deliberately with
+ * NO `notes`: a translation has nothing to report back to the user, and asking for
+ * commentary would only spend output tokens at $10/M on prose nobody reads.
+ *
+ * Ids the model omits keep their ORIGINAL Spanish text rather than going blank,
+ * so a partial response degrades to a mixed-language résumé instead of a broken
+ * one. `.max(600)` per item matches `GeneratedBulletObject`.
+ */
+export const TranslationResultSchema = z.object({
+  items: z
+    .array(z.object({ id: z.string().max(80), text: z.string().max(2000) }))
+    .max(400)
+    .default([]),
+});
+export type TranslationResult = z.infer<typeof TranslationResultSchema>;
+
 /** The exact contract returned to the frontend for the next question (spec §8). */
 export const AdaptiveQuestionSchema = z.object({
   questionId: z.string().min(1),
