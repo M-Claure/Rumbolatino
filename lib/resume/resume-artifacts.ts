@@ -5,21 +5,83 @@ import type { ResumeFileStore, ResumeRowUpdater } from "@/lib/storage/resume-fil
 import { UNLIMITED_DEADLINE, type RequestDeadline } from "@/lib/request-deadline";
 
 /**
- * What a render is expected to cost, so the writer can tell whether it fits in
- * what is left of the invocation.
+ * What a render is expected to cost, so the writer can tell whether it is worth
+ * starting at all.
  *
  * The gap between the two is Chromium itself: `@sparticuz/chromium` ships a
  * Brotli-compressed browser that has to be expanded into /tmp and launched once
- * per instance, and only once. A warm instance reuses both. Estimates rather than
- * measurements on purpose — the decision only needs to be right about the order
- * of magnitude, and being wrong costs a skipped PDF that the download path
- * re-renders anyway.
+ * per instance, and only once. A warm instance reuses both.
+ *
+ * These are ESTIMATES and they are no longer the safety mechanism — `renderWithin`
+ * below is. An estimate is made before the work starts, so it can only ever be a
+ * guess about a cold start whose real cost depends on the instance, and a guess
+ * that comes in low starts a render the invocation cannot afford. That is what
+ * produced a 504 on a first generation: the model call finished, the résumé was
+ * saved, the pre-check said a cold render fitted, and it did not. Keeping the
+ * check is still worth it — it avoids burning CPU on a render that will be thrown
+ * away — but the hard cap is what makes overrunning impossible.
+ *
+ * The cold figure was 20s when that happened. Raised, but do not treat the new
+ * number as measured either; it is the point past which starting is pointless.
  */
-const PDF_COLD_MS = 20_000;
-const PDF_WARM_MS = 6_000;
+export const PDF_COLD_MS = 25_000;
+export const PDF_WARM_MS = 6_000;
+
+/**
+ * Held back from the render so that finishing it is actually useful: the bytes
+ * still have to be uploaded to Storage and two rows updated, and a PDF rendered
+ * with no time left to store it is the same as no PDF, minus the response.
+ */
+export const POST_RENDER_MS = 4_000;
 
 /** Per-instance, matching the granularity of the Chromium extraction it tracks. */
 let renderedInThisProcess = false;
+
+/**
+ * Test seam, like `resetColdStartForTests` and `clearGenerationLocks`.
+ *
+ * `renderedInThisProcess` is module state by design — it tracks a per-instance
+ * Chromium extraction — which makes it shared between tests in a file and turns
+ * the cold/warm budget into something a test inherits from whatever ran before
+ * it. Declaring it is the difference between a timing test that means something
+ * and one that passes for the wrong reason.
+ */
+export function resetRenderStateForTests(warm = false): void {
+  renderedInThisProcess = warm;
+}
+
+/**
+ * Run a render against a hard wall-clock cap.
+ *
+ * Returns `null` when the cap is hit, and the caller then behaves exactly as it
+ * does for a skipped render — the writer is best-effort by contract and
+ * `POST /export-pdf` re-renders and back-fills on the first download.
+ *
+ * ── The abandoned render is left running, deliberately ─────────────────────
+ * There is no way to cancel a Chromium launch that is already in flight, and
+ * waiting for it is the failure being prevented. So the promise is dropped and a
+ * `.catch` is attached to it — without that, a render that fails AFTER being
+ * abandoned surfaces as an unhandled rejection and can take the process down,
+ * turning a missing PDF into a crashed instance. `pdf-generator.ts` closes the
+ * browser in a `finally`, so the cleanup still happens if the instance lives long
+ * enough; on a serverless platform it is frozen after the response instead, which
+ * is the correct trade.
+ */
+async function renderWithin(work: Promise<Uint8Array>, capMs: number): Promise<Uint8Array | null> {
+  // Attached before the race, not after: the rejection can arrive at any point.
+  work.catch(() => undefined);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), Math.max(capMs, 0));
+  });
+
+  try {
+    return await Promise.race([work, expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Side-effects that run when a new résumé version is persisted.
@@ -121,7 +183,26 @@ export function createResumePdfWriter(deps: ResumePdfWriterDeps): ResumeArtifact
       }
 
       try {
-        const bytes = await pdf.generate(resume.html);
+        const bytes = await renderWithin(pdf.generate(resume.html), leftMs - POST_RENDER_MS);
+        if (bytes === null) {
+          // The estimate above said this fitted and it did not. Same outcome as a
+          // skip — the résumé is saved and the response is what is being
+          // protected. Logged distinctly from a skip so the two are separable
+          // when tuning `PDF_COLD_MS`: a skip means the guess was pessimistic, a
+          // cap means it was optimistic, and only the second loses work.
+          console.warn(
+            `[resume-artifacts] PDF render exceeded its budget for profile ` +
+              `${resume.resumeProfileId} (version ${resume.version}, round ${resume.stage}): ` +
+              `had ${leftMs}ms. Abandoned so the response survives; the download path ` +
+              "will render and back-fill it.",
+          );
+          analytics?.track(
+            "resume_pdf_skipped",
+            { resumeProfileId: resume.resumeProfileId, version: resume.version },
+            userId,
+          );
+          return resume;
+        }
         renderedInThisProcess = true;
         const path = await files.putResumePdf({
           userId,
@@ -180,7 +261,24 @@ export function createResumePdfWriter(deps: ResumePdfWriterDeps): ResumeArtifact
       }
 
       try {
-        const bytes = await pdf.generate(translation.html);
+        const bytes = await renderWithin(pdf.generate(translation.html), leftMs - POST_RENDER_MS);
+        if (bytes === null) {
+          console.warn(
+            `[resume-artifacts] ${translation.language} PDF render exceeded its budget for ` +
+              `profile ${translation.resumeProfileId}: had ${leftMs}ms. Abandoned so the ` +
+              "response survives; the download path will render and back-fill it.",
+          );
+          analytics?.track(
+            "resume_pdf_skipped",
+            {
+              resumeProfileId: translation.resumeProfileId,
+              version: translation.sourceVersion,
+              language: translation.language,
+            },
+            userId,
+          );
+          return translation;
+        }
         renderedInThisProcess = true;
         const path = await files.putResumePdf({
           userId,

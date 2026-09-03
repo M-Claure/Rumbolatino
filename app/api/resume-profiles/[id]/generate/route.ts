@@ -2,6 +2,7 @@ import { handleRoute, ok } from "@/lib/http";
 import { getRequestContext, loadOwnedProfile } from "@/lib/request-context";
 import { assertWithinBudget, enforceRateLimit } from "@/lib/services/usage-guard";
 import { generateResume } from "@/lib/resume/resume-generator";
+import { countsAsImprovementRound } from "@/lib/resume/generation-round";
 import { MAX_RESUME_ITERATIONS } from "@/lib/config/limits";
 import { Errors } from "@/lib/errors";
 import { assembleProfileState } from "@/lib/profile-state";
@@ -28,18 +29,28 @@ export const runtime = "nodejs";
 export async function POST(_request: Request, { params }: { params: { id: string } }) {
   return handleRoute(async () => {
     const { userId, store, ai, analytics, resumeArtifacts } = await getRequestContext(params.id);
-    await loadOwnedProfile(store, params.id, userId);
+    // Read BEFORE anything below overwrites it: `status` is how this route tells
+    // "the user wants another round" from "the last attempt died and they pressed
+    // the button again". See `countsAsImprovementRound`.
+    const profileBefore = await loadOwnedProfile(store, params.id, userId);
     // The most expensive call in the product, so it carries both guards. The
     // budget check exempts a profile's FIRST résumé — nobody is refused the
     // document they came for (see lib/spend/budget.ts).
     await enforceRateLimit("generate", { userId });
     await assertWithinBudget({ operation: "generate", userId, resumeProfileId: params.id, store });
 
-    // A résumé already on file means this call is a regeneration, i.e. the end
-    // of an improvement round.
-    const isRegeneration = (await store.getLatestGeneratedResume(params.id)) !== null;
+    // A résumé on file USED to be the whole test for "this is a regeneration",
+    // and it was wrong in one case that really happens: a generation saves the
+    // résumé several steps before it returns, so a request that died after
+    // saving left one behind, and the retry was charged an improvement round for
+    // our failure. `statusBefore` is what separates the two.
+    const hasResume = (await store.getLatestGeneratedResume(params.id)) !== null;
+    const isImprovementRound = countsAsImprovementRound({
+      hasResume,
+      statusBefore: profileBefore.status,
+    });
     const completed = await store.getIteration(params.id);
-    if (isRegeneration && completed >= MAX_RESUME_ITERATIONS) {
+    if (isImprovementRound && completed >= MAX_RESUME_ITERATIONS) {
       throw Errors.conflict(
         `Ya mejoraste tu currículum ${MAX_RESUME_ITERATIONS} veces. Revísalo y descárgalo.`,
       );
@@ -74,7 +85,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
     // finalize the new version before downloading it. (`generateResume` has
     // already recorded the funnel as complete — see `runGeneration`.)
     await store.updateResumeProfile(params.id, { status: "generated", finalizedAt: null });
-    const iteration = isRegeneration
+    const iteration = isImprovementRound
       ? await store.advanceIteration(params.id, MAX_RESUME_ITERATIONS)
       : completed;
     analytics.track("resume_generated", { resumeProfileId: params.id, version: resume.version }, userId);

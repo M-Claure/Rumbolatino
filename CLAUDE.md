@@ -999,6 +999,19 @@ order to see the résumé improve (`0006_resume_pdf_storage.sql` created the buc
   finished résumé because Chromium hiccuped would be far worse than a missing file
   the download path re-renders (and back-fills) anyway. Failures are logged and
   visible as the gap between `resume_generated` and `resume_pdf_stored`.
+- **The render is HARD-CAPPED against the request deadline, and the estimate is
+  not the protection.** `PDF_COLD_MS`/`PDF_WARM_MS` decide whether to *start* a
+  render; `renderWithin` decides when to abandon one. The estimate alone was not
+  enough and produced a real 504: a first generation's model call succeeded, the
+  résumé was saved, the pre-check judged that a cold Chromium start fitted in the
+  remaining budget, and it did not — so the platform killed the invocation and
+  the response to an already-paid-for résumé was lost. An estimate is made before
+  the work starts and can only ever be a guess about a cold instance; a cap
+  cannot be wrong. On the cap the outcome is exactly a skipped PDF, which
+  `POST /export-pdf` re-renders and back-fills.
+  The abandoned render is deliberately left running with a `.catch` attached: a
+  Chromium launch cannot be cancelled, and an unhandled rejection arriving after
+  the response would turn a missing PDF into a dead instance.
 - **The seam is `ResumeArtifactWriter`** (`lib/resume/resume-artifacts.ts`), injected
   into `generateResume` / `proofreadAndRerender` — the only two functions that create
   a résumé. Enforcing it there rather than in each of the four routes is what makes
@@ -1188,6 +1201,19 @@ follow:
   (`tests/unit/iterations.test.ts` pins this).
 - **The improvement-round counter is server state** (`funnel.iteration`), enforced by
   `POST /generate`. It used to be localStorage, where clearing site data reset it.
+- **A round is charged on `status`, NOT on "a résumé exists"**
+  (`countsAsImprovementRound`). Those look equivalent and are not: a generation
+  saves the résumé several steps before it returns, so a request that died after
+  saving leaves one behind, and the person — who saw an error and no résumé —
+  presses the button again. Counting that as an improvement round takes one of
+  their three for our failure. Observed in production: a 504'd first generation
+  left the profile on `iteration=1` with the model billed twice. `generating` is
+  written before the model call and `generated` only after everything succeeds,
+  so a profile still on `generating` means the last attempt never finished.
+  The known cost is the right way round: `generating` is cleared only by success,
+  so a profile abandoned mid-generation gets its next generation free. Being
+  occasionally generous after a failure can be explained to someone; charging
+  them for our timeout cannot.
 - The `iteration_N` rows are an **audit log**: the answers are applied to `funnel`
   through the normal pipeline, so deleting one loses the record, not résumé content.
   Their `resume_pdf` is the exception worth knowing — it is the only pointer to the
