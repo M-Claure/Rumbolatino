@@ -177,6 +177,18 @@ export function PublishDialog({
             {defaults?.email && <li>• Tu correo: {defaults.email}</li>}
             {defaults?.phone && <li>• Tu teléfono: {defaults.phone}</li>}
             <li>• El currículum que acabas de hacer</li>
+            {/*
+              The zone, and it has to be said here. Employers see a marker on a
+              map for the person's postal area — the middle of the ZIP they gave
+              in the funnel, which is also what already lets them be found "a 12
+              millas" from a search. This checkbox is the entire consent, so a
+              disclosure that is not named in this list is not consented to.
+
+              Worded as the ZONE, never as the address, because that is what it
+              is: we never ask for an address, the marker is several miles coarse,
+              and everyone sharing a ZIP shares one marker.
+            */}
+            <li>• La zona donde vives (tu código postal en un mapa, nunca tu dirección)</li>
           </ul>
         </div>
 

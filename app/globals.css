@@ -30,3 +30,66 @@
     min-height: calc(100svh - var(--brand-header-h));
   }
 }
+
+/* ── The talent map's own markup ─────────────────────────────────────────────
+   Leaflet renders markers and popups by injecting HTML, so their contents never
+   pass through Tailwind's class scanner and utility classes on them would be
+   purged from the build. These two rules are the whole reason this file has a
+   component layer: everything else in the product is a utility.
+
+   `.mcv-pin` is a counted badge, not a teardrop — see `components/talent/
+   TalentMap.tsx`. One pin is one ZIP AREA holding N people, and a badge says
+   that where a pointed pin would claim a spot. It also avoids Leaflet's default
+   marker, whose PNG a bundler rewrites into a 404. */
+@layer components {
+  .mcv-pin {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 9999px;
+    border: 2px solid rgb(var(--c-accent-on));
+    background: rgb(var(--c-accent));
+    color: rgb(var(--c-accent-on));
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1;
+    /* Leaflet stacks markers by DOM order; a ring keeps overlapping pins legible
+       against both the light and the dark parts of a basemap. */
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+  }
+
+  .mcv-pop ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .mcv-pop-place {
+    margin: 0 0 0.5rem;
+    font-weight: 700;
+    color: rgb(var(--c-text-primary));
+  }
+
+  .mcv-pop a {
+    font-weight: 600;
+    color: rgb(var(--c-accent-dark));
+    text-decoration: none;
+  }
+
+  .mcv-pop a:hover {
+    text-decoration: underline;
+  }
+
+  /* The headline under each name. A block so it wraps under the link rather
+     than pushing the name off the popup's fixed width. */
+  .mcv-pop span {
+    display: block;
+    font-size: 0.75rem;
+    color: rgb(var(--c-text-secondary));
+  }
+}

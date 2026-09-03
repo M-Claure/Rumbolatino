@@ -1,6 +1,6 @@
 import { handleRoute, ok } from "@/lib/http";
 import { headers } from "next/headers";
-import { originForZip, searchDirectory } from "@/lib/services/talent-directory";
+import { resolveSearchFilters, searchDirectory } from "@/lib/services/talent-directory";
 import { TalentSearchQuery } from "@/lib/validation/api-schemas";
 import { requireEmployerSession } from "@/lib/employers/session";
 
@@ -24,11 +24,28 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   return handleRoute(async () => {
     const url = new URL(request.url);
-    const { zip, radius, ...rest } = TalentSearchQuery.parse(
-      Object.fromEntries(url.searchParams),
-    );
+    const params = TalentSearchQuery.parse(Object.fromEntries(url.searchParams));
     const employer = await requireEmployerSession();
-    const origin = originForZip(zip, radius);
-    return ok(await searchDirectory({ ...rest, ...(origin ?? {}) }, headers(), employer));
+
+    // `?zip=` → an origin and `?metro=` → a CBSA code both resolve inside the
+    // service, which `/empleadores` also goes through: the page and its own API
+    // must not be able to disagree about what a query string means.
+    const { filters, metro, badZip } = resolveSearchFilters(params);
+    const result = await searchDirectory(filters, headers(), employer);
+
+    // A filter that could not be applied is REPORTED rather than swallowed. A
+    // caller reads this response as the answer to what it asked, and returning
+    // the whole country under a mistyped metro — with nothing saying so — is a
+    // wrong answer dressed as a result set. Only present when there is something
+    // to say, so an ordinary search keeps its exact previous shape.
+    const unresolved = {
+      ...(badZip ? { zip: params.zip } : {}),
+      ...(metro.status === "unknown" ? { metro: metro.typed } : {}),
+      ...(metro.status === "ambiguous"
+        ? { metro: metro.typed, metroOptions: metro.options }
+        : {}),
+    };
+
+    return ok(Object.keys(unresolved).length > 0 ? { ...result, unresolved } : result);
   });
 }

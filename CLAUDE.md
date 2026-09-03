@@ -37,7 +37,8 @@ lib/services/usage-guard.ts  (lib/rate-limit/* · lib/spend/*)
 lib/services/answer-pipeline.ts · lib/resume/resume-generator.ts · lib/skills/*
 lib/services/talent-publish.ts · lib/services/talent-directory.ts
    │                                             │
-lib/talent/*  (taxonomy · classifier · projection)  ← PURE, no I/O, no model
+lib/talent/*  (taxonomy · classifier · projection · map-pins)  ← PURE, no I/O, no model
+lib/geo/*     (ZIP + CBSA reference tables)  ← server-only, no network
    │
 lib/question-engine/*  (completeness-engine, question-catalog, prioritizer, planner)  ← PURE, no I/O
    │                                             │
@@ -222,7 +223,8 @@ the same ceiling.
 | `lib/employers/` | the ONE login: the gate · the namespaced session clients · pure email/password policy · what both auth callbacks share |
 | `lib/auth-redirect.ts` | pure open-redirect guard for `/auth/*` — allow-listed `?next=` |
 | `app/auth/` | `confirm` (`token_hash` → `verifyOtp`, any device) · `callback` (PKCE `code`) |
-| `lib/talent/` | directory taxonomy (code constants) · deterministic classifier · résumé→profile projection with the public/contact split · résumé delivery (preview vs download) |
+| `lib/talent/` | directory taxonomy (code constants) · deterministic classifier · résumé→profile projection with the public/contact split · résumé delivery (preview vs download) · map pins (pure, grouped by ZIP area) |
+| `lib/geo/` | bundled ZIP table (city/state/centroid) · bundled ZIP→CBSA table · the location answer's deterministic resolver · metro autocomplete + `metro=` resolution |
 | `lib/services/answer-pipeline.ts` | the spec §9 answer pipeline |
 | `lib/resume/` | generator · HTML renderer (language-aware) · PDF (two renderers: puppeteer local, `@sparticuz/chromium` serverless) · **artifact writer** (saves the PDF on every generation, and on every translation) · source tracing · **analyzer** (improvement loop) · **proofreader** (final spelling/grammar/format pass before finalize) · **translator** (on-demand English version) |
 | `lib/rate-limit/` | pure policy (limits + keys) · `RateLimiter` iface · memory/no-op/Postgres impls |
@@ -503,6 +505,89 @@ the directory calls a model**: the category comes from a keyword classifier
   "25 mile" search does not quietly reach 35 on the diagonal. Plain columns
   rather than PostGIS: this table holds thousands of rows, not millions.
   `mcv_distance_miles` in SQL and `distanceMiles` in TS must stay in agreement.
+- **They ALSO filter by metro area, and the two controls are not the same
+  question** (`0017`, `docs/talent-metro-search.md`). `?metro=` narrows to a
+  **CBSA** — OMB's definition of one labour market, a county with an urban core
+  plus every county that commutes into it, so `Houston-Pasadena-The Woodlands,
+  TX` is nine counties. The radius answers "within this drive of *here*", which
+  needs the employer to already know which ZIP to centre on; the metro answers
+  "in this labour market", which is what somebody hiring across a city means.
+  They compose as an AND.
+  - **Strict equality, no radius merge.** A metro is not quietly widened by a
+    radius around its own centre to catch people just past the boundary: a CBSA
+    already reaches far past the city line, and the control for "a bit further
+    out" is the one next to it, where the employer sets the number and can see
+    what it did. A row with no metro is EXCLUDED from a metro search, never
+    matched by every one — `t.cbsa_code = p.cbsa` with no `or ... is null`.
+  - **Resolved at publish time, denormalized onto the row.** `cbsa_code`/
+    `cbsa_title` come from `lib/geo/cbsa-lookup.ts` reading the ZIP the funnel
+    already captured, so a metro search is an indexed equality test and never a
+    join against 30,000 ZIPs. The cost is that a listing carries the delineation
+    vintage it was published under, which is what `npm run geo:cbsa --
+    --backfill` exists to fix. Regenerating the table without backfilling leaves
+    listings on the old vintage.
+  - **The reference table is BUNDLED, like the ZIP table** — `lib/geo/us-cbsa.json`,
+    405 KB, `server-only`, built by `scripts/build-cbsa-table.ts` from the OMB
+    July 2023 delineations and the 2020 ZCTA→county relationship file. Census
+    and OMB only: the spec's first choice, HUD's ZIP→CBSA crosswalk, is the
+    better dataset and needs a registered API token — a credential to provision
+    and rotate for a file read once a year. A `zip_reference` table in Postgres
+    would split one reference dataset across the database and the bundle and put
+    the metro back into a query-time join.
+  - **About 26% of US ZIPs are in NO metro, and that is the data, not a bug.**
+    OMB leaves rural counties outside every CBSA. Those people are absent from
+    metro search — never placed in the nearest one — and are reached by the ZIP
+    radius or by browsing unfiltered. The one inclusiveness rule lives in the
+    reference data, not the query: a ZCTA whose dominant county is in no metro is
+    assigned to a metro county holding at least a third of it, because a commuter
+    ZIP on a metro's rural edge would otherwise vanish from every metro search.
+  - **The `metro=` parameter takes TEXT or a code, and resolution has FOUR
+    outcomes** — absent, exact, ambiguous, unknown — each with its own sentence
+    on the page. Ambiguous does not filter and offers the choices: Portland,
+    Oregon and Portland, Maine are both real, and guessing would answer a
+    question the employer did not ask. It takes text because `MetroPicker`
+    submits the metro's own title, which is what keeps the filter working with no
+    JavaScript and the URL readable. Resolution is against a CLOSED list of 928
+    titles — picking a row from a fixed table, never free-text search, which is
+    the same discipline `0014` applied to the name box.
+  - **`resolveSearchFilters` is where both readers meet.** `/empleadores` and
+    `/api/talent/search` must not be able to disagree about what a query string
+    means, for the same reason the rate limit lives in the service and not the
+    route.
+  - **The autocomplete (`/api/talent/metros`) knows nothing about anybody.** The
+    same 928 metros for every caller, whether or not a person is published in
+    any of them. Filtering it to metros that HAVE candidates would let anyone
+    with an account map, one keystroke at a time, which parts of the country have
+    people listed — outside the limit that governs searching for them. It has its
+    own limit, `metro_lookup`, rather than a share of `directory_search`: it is
+    keystroke-driven, and spending the search allowance on typeahead would lock
+    an employer out of the search they were typing towards.
+- **Results are also drawn on a MAP, one pin per ZIP AREA — never per person.**
+  Leaflet + OpenStreetMap: free, no API key, no billing, nothing to provision,
+  the same reasoning that keeps the ZIP table out of a geocoding API. Everyone in
+  one ZIP shares an identical centroid, so a per-person marker is physically the
+  same point; `groupByLocation` (pure, `lib/talent/map-pins.ts`) collapses them
+  into one pin with a count whose popup lists the people there. That says the
+  true thing — *this postal area holds four people* — and a pin labelled "4"
+  cannot be read as anybody's house. Jitter was rejected outright: it invents a
+  position that looks precise. Someone with no coordinates is left OFF the map,
+  never placed somewhere plausible.
+  A pin links to `/talento/[slug]` and never to a résumé: opening a résumé spends
+  a `contact_reveal` and writes an audit row, and a map is a surface people click
+  around on.
+  **GeoNames and OpenStreetMap attribution is rendered as visible caption text**,
+  not only in Leaflet's control — `docs/attributions.md` had already written down
+  that a map is the case where the CC BY 4.0 credit has to become visible.
+- **Publishing the per-person COORDINATE was a deliberate widening of
+  `TalentProfilePublic`,** and the three things that justify it have to keep
+  holding: it is a ZIP-area centroid and never an address (we never ask for one);
+  it was already derivable, since `distanceMiles` from three origins
+  trilaterates the point exactly; and it is the purpose the ZIP was collected
+  for. `PublishDialog` now names the zone in the list of what employers see —
+  that checkbox is the entire consent, so a disclosure not named there is not
+  consented to. `postal_code` stays private: same information as the centroid,
+  no use to the map, and a bare ZIP column is the shape that ends up in a
+  spreadsheet.
 - **Seniority is a BUCKET, never a number.** An exact figure plus a graduation
   year is an age, which this product refuses to collect at all. For the same
   reason the filter set is closed — a name, category, city, state,
@@ -997,7 +1082,12 @@ reachable only through functions granted to `service_role`. See **Usage limits**
 And four from `0010_talent_directory.sql` — `talent_profiles` (owner-only RLS; the
 public view of it is two security-definer functions, never a policy),
 `talent_contacts`, `employers` and `contact_reveals` (RLS on, no policies,
-service-role only). See **Bolsa de Talento**. `employers` is keyed to
+service-role only). See **Bolsa de Talento**. `0017` adds no table: two columns
+(`talent_profiles.cbsa_code`/`cbsa_title`), an index, and four more fields on the
+`returns table` clause of BOTH public read functions — the metro plus the
+coordinates the map plots. Note it DROPS and recreates `talent_profile_public`
+rather than replacing it: `create or replace function` cannot change a return
+type, and for a `returns table` function the column list *is* the return type. `employers` is keyed to
 `auth.users(id)` and holds a row per registered employer, plus its
 `email_verified_at` — the directory gate's only input. `0013` adds
 `employer_email_tokens` (RLS on, no policies) for verification and password-reset
@@ -1120,6 +1210,13 @@ npm run typecheck          # tsc --noEmit
 npm test                   # unit tests (vitest)
 npm run test:e2e           # e2e tests (playwright; builds + starts the app)
 npm run lint               # next lint
+
+npm run geo:cbsa           # rebuild lib/geo/us-cbsa.json (ZIP → metro area) from
+                           # the Census/OMB files. Follow it with --backfill, which
+                           # re-derives cbsa_code/title on published listings — the
+                           # metro is denormalized at publish time, so without it a
+                           # listing keeps the vintage it was published under.
+                           # See docs/talent-metro-search.md
 
 npm run resume:list        # what résumés exist in the Supabase project
 npm run resume:delete      # delete one, picked from a numbered list — the funnel

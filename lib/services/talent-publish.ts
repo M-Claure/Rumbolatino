@@ -15,6 +15,7 @@ import {
   publicDisplayName,
 } from "@/lib/talent/talent-projection";
 import { assembleProfileState } from "@/lib/profile-state";
+import { lookupCbsaForZip } from "@/lib/geo/cbsa-lookup";
 
 /**
  * Publishing a finished résumé to the talent directory, and taking it back down.
@@ -145,6 +146,28 @@ export async function publishTalentProfile(
     experience: state.experience,
   });
 
+  // ── Where they are, resolved ONCE ────────────────────────────────────────
+  // Straight from the résumé's own captured ZIP. The metro is a table lookup on
+  // that ZIP (`lib/geo/cbsa-lookup.ts`), done HERE rather than at search time so
+  // an employer's metro search is an indexed equality test — the spec's "resolve
+  // once and store it, so employer searches are fast".
+  //
+  // Null for anyone outside the US and for a rural ZIP that OMB places in no
+  // metro at all. Both are then simply absent from metro searches and from the
+  // map, rather than being drawn at the nearest plausible point.
+  //
+  // Re-derived on every publish, so correcting a ZIP corrects the listing. What
+  // it does NOT track is a change to the CBSA delineations themselves, which is
+  // what `npm run geo:cbsa -- --backfill` is for.
+  const metro = lookupCbsaForZip(personal?.postalCode);
+  const location = {
+    postalCode: personal?.postalCode ?? null,
+    latitude: personal?.latitude ?? null,
+    longitude: personal?.longitude ?? null,
+    cbsaCode: metro?.code ?? null,
+    cbsaTitle: metro?.title ?? null,
+  };
+
   const projection = projectTalentProfile({
     resume,
     personal,
@@ -153,6 +176,9 @@ export async function publishTalentProfile(
     // Nobody was asked, so the listing promises nothing it cannot keep.
     availability: "flexible",
     yearsBucket: estimateYearsBucket(state.experience, now.getUTCFullYear()),
+    // The same object reaches the store below, so the public projection and the
+    // stored row cannot end up describing two different places.
+    location,
     slug,
     publishedAt,
   });
@@ -161,13 +187,7 @@ export async function publishTalentProfile(
     funnelId: profile.id,
     userId,
     profile: projection.public,
-    // Straight from the résumé's own captured ZIP. Null for anyone outside the
-    // US, who is then simply absent from radius searches rather than misplaced.
-    location: {
-      postalCode: personal?.postalCode ?? null,
-      latitude: personal?.latitude ?? null,
-      longitude: personal?.longitude ?? null,
-    },
+    location,
     contact: projection.contact,
     manageToken,
     expiresAt: talentExpiryFrom(publishedAt),

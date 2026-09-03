@@ -394,12 +394,36 @@ export const TalentSearchQuery = z.object({
    */
   zip: blankAsAbsent(z.string().trim().max(10).optional()),
   radius: blankAsAbsent(z.coerce.number().min(1).max(500).optional()),
+  /**
+   * A metro area: either a CBSA code (`26420`, which is what the autocomplete
+   * submits and what a shared URL carries) or the words a person typed
+   * (`Houston`). Resolved server-side against the closed list of ~930 OMB metro
+   * titles by `resolveMetroQuery` — this is picking a row from a fixed table,
+   * not free-text search over anything.
+   *
+   * It accepts text as well as a code so the filter bar keeps working with no
+   * JavaScript: the combobox needs hydration to fill the code, and the rest of
+   * that form is a plain GET on purpose. `max(120)` because the longest real
+   * title is around eighty characters.
+   */
+  metro: blankAsAbsent(z.string().trim().max(120).optional()),
   limit: blankAsAbsent(z.coerce.number().int().min(1).max(60).optional()),
   offset: blankAsAbsent(z.coerce.number().int().min(0).max(5000).optional()),
 });
 
 /** The parsed filter set, as `/empleadores` and `/api/talent/search` both see it. */
 export type TalentSearchParams = z.infer<typeof TalentSearchQuery>;
+
+/**
+ * The metro autocomplete's only parameter.
+ *
+ * A blank or one-character `q` is VALID and yields no suggestions, rather than a
+ * 400: the combobox fires while somebody is still typing, and rejecting the
+ * first keystroke would fill their console with errors during normal use.
+ */
+export const MetroQuery = z.object({
+  q: blankAsAbsent(z.string().trim().max(120).optional()),
+});
 
 /**
  * Who is asking to see a contact.

@@ -24,30 +24,59 @@ function profile(o: Partial<TalentProfilePublic> = {}): TalentProfilePublic {
     city: "Houston",
     state: "TX",
     country: "Estados Unidos",
+    cbsaCode: HOUSTON_CBSA,
+    cbsaTitle: "Houston-Pasadena-The Woodlands, TX",
+    latitude: 29.7594,
+    longitude: -95.3594,
     publishedAt: new Date(Date.now() - HOUR).toISOString(),
     ...o,
   };
 }
 
-/** Real ZIP centroids, so the distances below are the true ones. */
+/** Real CBSA codes, so a wrong one here fails rather than passing vacuously. */
+const HOUSTON_CBSA = "26420";
+const DALLAS_CBSA = "19100";
+const MIAMI_CBSA = "33100";
+
+/**
+ * Real ZIP centroids and real metros, so the distances below are the true ones
+ * and a wrong CBSA code fails instead of matching itself.
+ *
+ * Katy shares Houston's metro on purpose: that a ZIP twenty-five miles out and
+ * in a different county comes back under "Houston" is the whole reason the metro
+ * filter exists, and the pairing here is what pins it.
+ */
 const PLACES = {
-  houston: { postalCode: "77002", latitude: 29.7594, longitude: -95.3594 },
-  katy: { postalCode: "77494", latitude: 29.7445, longitude: -95.83 },
-  dallas: { postalCode: "75201", latitude: 32.7876, longitude: -96.7995 },
-  miami: { postalCode: "33125", latitude: 25.7825, longitude: -80.2341 },
-  nowhere: { postalCode: null, latitude: null, longitude: null },
+  houston: { postalCode: "77002", latitude: 29.7594, longitude: -95.3594, cbsaCode: HOUSTON_CBSA, cbsaTitle: "Houston-Pasadena-The Woodlands, TX" },
+  katy: { postalCode: "77494", latitude: 29.7445, longitude: -95.83, cbsaCode: HOUSTON_CBSA, cbsaTitle: "Houston-Pasadena-The Woodlands, TX" },
+  dallas: { postalCode: "75201", latitude: 32.7876, longitude: -96.7995, cbsaCode: DALLAS_CBSA, cbsaTitle: "Dallas-Fort Worth-Arlington, TX" },
+  miami: { postalCode: "33125", latitude: 25.7825, longitude: -80.2341, cbsaCode: MIAMI_CBSA, cbsaTitle: "Miami-Fort Lauderdale-West Palm Beach, FL" },
+  /** No US ZIP: no coordinates, no metro, and absent from both filters. */
+  nowhere: { postalCode: null, latitude: null, longitude: null, cbsaCode: null, cbsaTitle: null },
+  /** A real ZIP that OMB places in no metro at all — rural, not broken. */
+  rural: { postalCode: "59012", latitude: 45.1601, longitude: -109.1601, cbsaCode: null, cbsaTitle: null },
 };
 
 async function seed(
   o: Partial<TalentProfilePublic> = {},
   over: { expiresAt?: string; location?: TalentLocation } = {},
 ) {
-  const p = profile(o);
+  const location = over.location ?? PLACES.houston;
+  // The projection copies the resolved location onto the public profile, so a
+  // fixture that set only one of the two would be testing a state the real
+  // publish path cannot produce.
+  const p = profile({
+    cbsaCode: location.cbsaCode,
+    cbsaTitle: location.cbsaTitle,
+    latitude: location.latitude,
+    longitude: location.longitude,
+    ...o,
+  });
   return talent.publish({
     funnelId: `funnel-${p.slug}`,
     userId: `user-${p.slug}`,
     profile: p,
-    location: over.location ?? PLACES.houston,
+    location,
     contact: {
       fullName: "María Gutiérrez",
       email: "maria@correo.com",
@@ -445,6 +474,102 @@ describe("proximity search", () => {
       radiusMiles: 10,
     });
     expect(profiles.map((p) => p.slug)).toEqual(["houston-cocina"]);
+  });
+});
+
+// ── Metro (CBSA) ────────────────────────────────────────────────────────────
+
+describe("metro search", () => {
+  beforeEach(async () => {
+    await seed({ slug: "houston", city: "Houston", state: "TX" }, { location: PLACES.houston });
+    await seed({ slug: "katy", city: "Katy", state: "TX" }, { location: PLACES.katy });
+    await seed({ slug: "dallas", city: "Dallas", state: "TX" }, { location: PLACES.dallas });
+    await seed({ slug: "rural", city: "Bearcreek", state: "MT" }, { location: PLACES.rural });
+    await seed({ slug: "sin-zip", city: "Guadalajara", state: null }, { location: PLACES.nowhere });
+  });
+
+  it("returns everyone in the metro, including the suburb a city filter would miss", async () => {
+    // Katy is ~28 miles out, in a different county, and would not match a
+    // city-name filter for "Houston". This assertion IS the feature: a CBSA is
+    // county-based, so the whole commuting region comes back as one answer.
+    const { profiles, total } = await talent.search({ cbsaCode: HOUSTON_CBSA });
+    expect(total).toBe(2);
+    expect(profiles.map((p) => p.slug).sort()).toEqual(["houston", "katy"]);
+  });
+
+  it("does not leak into a neighbouring metro", async () => {
+    expect((await talent.search({ cbsaCode: DALLAS_CBSA })).total).toBe(1);
+    expect((await talent.search({ cbsaCode: MIAMI_CBSA })).total).toBe(0);
+  });
+
+  it("EXCLUDES a listing with no metro rather than matching every one", async () => {
+    // The rural row and the row with no US ZIP both have a null `cbsa_code`. The
+    // SQL predicate is `t.cbsa_code = p.cbsa` with no `or ... is null`, so they
+    // are absent from every metro search — the difference between "not in this
+    // labour market" and "in all of them", and the latter would put someone in
+    // Montana in front of an employer hiring in Houston.
+    for (const code of [HOUSTON_CBSA, DALLAS_CBSA, MIAMI_CBSA]) {
+      const slugs = (await talent.search({ cbsaCode: code })).profiles.map((p) => p.slug);
+      expect(slugs, code).not.toContain("rural");
+      expect(slugs, code).not.toContain("sin-zip");
+    }
+  });
+
+  it("still lists them when there is no metro filter", async () => {
+    // The complement of the test above, and what makes it a narrowing rather
+    // than those two people being unreachable: an unfiltered search, the ZIP
+    // radius and the category filter all still find them.
+    expect((await talent.search({})).total).toBe(5);
+  });
+
+  it("intersects with the radius rather than widening it", async () => {
+    // The two location controls compose as an AND. Katy is in the Houston metro
+    // AND ~28 miles from downtown, so a 10-mile radius must drop it even though
+    // the metro matches — the metro is deliberately NOT allowed to pull in
+    // people the radius excluded.
+    const { profiles } = await talent.search({
+      cbsaCode: HOUSTON_CBSA,
+      latitude: PLACES.houston.latitude,
+      longitude: PLACES.houston.longitude,
+      radiusMiles: 10,
+    });
+    expect(profiles.map((p) => p.slug)).toEqual(["houston"]);
+  });
+
+  it("intersects with the category and the name box too", async () => {
+    await seed(
+      { slug: "katy-cocina", category: "gastronomia", displayName: "Lucía Fuentes" },
+      { location: PLACES.katy },
+    );
+    expect(
+      (await talent.search({ cbsaCode: HOUSTON_CBSA, category: "gastronomia" })).profiles.map(
+        (p) => p.slug,
+      ),
+    ).toEqual(["katy-cocina"]);
+    // A name match is not a bypass of the metro, the same way it is not a bypass
+    // of the radius.
+    expect((await talent.search({ cbsaCode: DALLAS_CBSA, query: "Fuentes" })).total).toBe(0);
+  });
+
+  it("returns the metro and the coordinates on every result", async () => {
+    // The map needs the coordinates and the profile page labels the metro, so
+    // both have to survive the round trip through the store — a public read
+    // function that forgot the columns would return null here and draw an empty
+    // map with nothing failing.
+    const { profiles } = await talent.search({ cbsaCode: HOUSTON_CBSA });
+    expect(profiles[0]).toMatchObject({
+      cbsaCode: HOUSTON_CBSA,
+      cbsaTitle: "Houston-Pasadena-The Woodlands, TX",
+    });
+    expect(typeof profiles[0]?.latitude).toBe("number");
+    expect(typeof profiles[0]?.longitude).toBe("number");
+  });
+
+  it("never returns the postal code", async () => {
+    // The centroid and the ZIP carry the same information and the map needs the
+    // first. The second stays on the row — see the note on `TalentLocation`.
+    const { profiles } = await talent.search({ cbsaCode: HOUSTON_CBSA });
+    expect(JSON.stringify(profiles)).not.toContain("77002");
   });
 });
 

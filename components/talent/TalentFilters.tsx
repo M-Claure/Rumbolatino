@@ -4,6 +4,7 @@ import { useState } from "react";
 import { CATEGORY_OPTIONS } from "@/lib/talent/taxonomy";
 import type { TalentSearchFilters } from "@/types";
 import { UseMyLocation } from "@/components/UseMyLocation";
+import { MetroPicker } from "@/components/talent/MetroPicker";
 
 /**
  * The directory's filter bar.
@@ -27,6 +28,20 @@ import { UseMyLocation } from "@/components/UseMyLocation";
  * written down in the migration. If it needs answering, the answer is a second
  * closed-list control, not free text merged back into the name box.
  *
+ * ── The two location controls, and why there are two ───────────────────────
+ * `Ciudad o área metropolitana` and `Código postal` + `Distancia` answer
+ * different questions and compose as an AND. The metro is a labour market — OMB
+ * defines it from commuting data, so "the Houston area" is nine counties and
+ * needs no distance chosen. The radius is "within this drive of here", which is
+ * what somebody hiring for one shop floor actually means. An employer who fills
+ * in both wants the intersection and gets it.
+ *
+ * The metro deliberately does NOT quietly add a radius of its own around the
+ * metro's centre to catch people just outside the boundary. That was considered
+ * and rejected: a CBSA already reaches well past the city line, and the control
+ * for "a bit further out" is the one right next to it, where the employer sets
+ * the number and can see what it did.
+ *
  * No AVAILABILITY dropdown either, and that one is a different argument: it is
  * not unsafe, it is empty. `talent-publish.ts` stamps every listing `flexible`
  * because the publish step is one checkbox and nobody is asked for a start date,
@@ -40,11 +55,19 @@ export function TalentFilters({
   filters,
   zip = "",
   radius,
+  metro = "",
 }: {
   filters: TalentSearchFilters;
   /** The ZIP the current results were centred on, echoed back into the box. */
   zip?: string;
   radius?: number;
+  /**
+   * The metro to echo back — the RESOLVED title when it resolved, otherwise the
+   * words the employer typed. Either way it is what they should see in the box:
+   * replacing "Houston" with nothing would hide the input the page is about to
+   * comment on.
+   */
+  metro?: string;
 }) {
   // Held in state only so the locate button can fill it in; the form still
   // submits as a plain GET, so the search remains a shareable URL.
@@ -56,7 +79,10 @@ export function TalentFilters({
 
   return (
     <form method="GET" action="/empleadores" className="rounded-2xl border border-border bg-white p-4">
-      <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      {/* Six columns, filled as 3+3 then 2+2+2: the two free-text boxes get the
+          width they need on the first row, and the three narrow controls share
+          the second. Nothing here should wrap to a stray third row. */}
+      <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-6">
         {/*
           This box takes ONE thing: a person's name (`0014`). Saying so is not
           optional. A lone box labelled "Buscar" does not say what it searches,
@@ -76,7 +102,7 @@ export function TalentFilters({
           González). Keep that asymmetry in this direction if the copy changes
           again: promising less than the search does is safe, the reverse is not.
         */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-3">
           <label className="block">
             <span className="text-sm font-semibold text-text-primary">
               Buscar una persona por su nombre
@@ -97,7 +123,31 @@ export function TalentFilters({
           </p>
         </div>
 
-        <label className="block">
+        {/*
+          A metro area, by name. This is the control that answers "who works in
+          the Houston area" — the question `0011` left with no answer when it
+          removed the city text filters, correctly, because a CITY name is a
+          municipal boundary that stops before Katy, Pasadena and Sugar Land. A
+          CBSA does not: it is the whole commuting region, maintained by OMB.
+
+          It submits the metro's own TITLE, not a code, so the box works with no
+          JavaScript and the resulting URL says what it filtered by — see
+          `MetroPicker`.
+        */}
+        <div className="lg:col-span-3">
+          <label className="block">
+            <span className="text-sm font-semibold text-text-primary">
+              Ciudad o área metropolitana
+            </span>
+            <MetroPicker defaultValue={metro} className={field} />
+          </label>
+          <p className="mt-1 text-xs leading-snug text-text-secondary">
+            Escribe una ciudad y elige el área que aparezca. Incluye a las poblaciones
+            vecinas desde donde se viaja a trabajar.
+          </p>
+        </div>
+
+        <label className="block lg:col-span-2">
           <span className="text-sm font-semibold text-text-primary">Área</span>
           <select name="category" defaultValue={filters.category ?? ""} className={field}>
             <option value="">Todas</option>
@@ -109,10 +159,9 @@ export function TalentFilters({
           </select>
         </label>
 
-        {/* ZIP + radius instead of a city name. Typing "Houston" used to miss
-            everyone in Katy, Pasadena and Sugar Land — people who are a short
-            drive away and are exactly who an employer wants to see. */}
-        <label className="block">
+        {/* ZIP + radius: "within this drive of here", which is a different
+            question from "in this labour market" and composes with it. */}
+        <label className="block lg:col-span-2">
           <span className="text-sm font-semibold text-text-primary">Código postal</span>
           <input
             type="text"
@@ -127,7 +176,7 @@ export function TalentFilters({
           />
         </label>
 
-        <label className="block">
+        <label className="block lg:col-span-2">
           <span className="text-sm font-semibold text-text-primary">Distancia</span>
           <select name="radius" defaultValue={String(radius ?? 25)} className={field}>
             <option value="10">Hasta 10 millas</option>

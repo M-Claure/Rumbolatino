@@ -13,12 +13,13 @@
  * filter bar sends, and a regression here silently un-fixes the search box.
  */
 import { describe, expect, it } from "vitest";
-import { TalentSearchQuery } from "@/lib/validation/api-schemas";
+import { MetroQuery, TalentSearchQuery } from "@/lib/validation/api-schemas";
 
 /** What the browser actually sends for a given state of the filter bar. */
 const formSubmission = (over: Record<string, string> = {}) => ({
   query: "",
   category: "",
+  metro: "",
   zip: "",
   radius: "25",
   ...over,
@@ -52,6 +53,30 @@ describe("TalentSearchQuery — what the filter bar actually submits", () => {
     expect(parsed.success).toBe(true);
     expect(parsed.success && parsed.data.category).toBe("gastronomia");
     expect(parsed.success && parsed.data.query).toBe("pastel");
+  });
+
+  it("treats an empty metro box as absent, like every other blank control", () => {
+    // The same trap as `category=`: the form submits the box whether or not
+    // anybody typed in it, and a blank that reached `resolveMetroQuery` as a
+    // search would render "no reconocimos ''" on an unfiltered page.
+    const parsed = TalentSearchQuery.safeParse(formSubmission());
+    expect(parsed.success && parsed.data.metro).toBeUndefined();
+  });
+
+  it("keeps the metro as TEXT, resolved later against the closed list", () => {
+    // `MetroPicker` submits the full OMB title, and the no-JavaScript path
+    // submits whatever was typed. Both arrive here as text — the schema
+    // deliberately does not try to be the resolver, which needs the ZIP table.
+    for (const typed of ["Houston-Pasadena-The Woodlands, TX", "houston", "26420"]) {
+      const parsed = TalentSearchQuery.safeParse(formSubmission({ metro: typed }));
+      expect(parsed.success && parsed.data.metro, typed).toBe(typed);
+    }
+  });
+
+  it("rejects a metro longer than any real title", () => {
+    expect(TalentSearchQuery.safeParse(formSubmission({ metro: "x".repeat(121) })).success).toBe(
+      false,
+    );
   });
 
   it("treats an empty ZIP as absent rather than as a ZIP to look up", () => {
@@ -117,5 +142,27 @@ describe("TalentSearchQuery — values that are genuinely wrong still fail", () 
     // Whitespace is blank. `talent_search` treats `btrim(p_query) = ''` as "no
     // query", so the page must agree, or it would claim to have searched.
     expect(parsed.success && parsed.data.query).toBeUndefined();
+  });
+});
+
+/**
+ * The autocomplete's parameter.
+ *
+ * A blank or one-character `q` is VALID and yields nothing, rather than a 400:
+ * `MetroPicker` fires while somebody is still typing, and rejecting the first
+ * keystroke would fill the console with errors during ordinary use.
+ */
+describe("MetroQuery — the autocomplete's parameter", () => {
+  it("accepts a partial word", () => {
+    expect(MetroQuery.parse({ q: "hous" }).q).toBe("hous");
+  });
+
+  it("accepts a blank as absent instead of failing", () => {
+    expect(MetroQuery.parse({ q: "" }).q).toBeUndefined();
+    expect(MetroQuery.parse({}).q).toBeUndefined();
+  });
+
+  it("still bounds the length", () => {
+    expect(MetroQuery.safeParse({ q: "x".repeat(121) }).success).toBe(false);
   });
 });

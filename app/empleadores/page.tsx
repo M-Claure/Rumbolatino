@@ -4,10 +4,12 @@ import { redirect } from "next/navigation";
 import { cookies, headers } from "next/headers";
 import { getBrandConfig } from "@/lib/brand/registry";
 import { getActiveBrandId } from "@/lib/brand/server";
-import { originForZip, searchDirectorySafely } from "@/lib/services/talent-directory";
+import { resolveSearchFilters, searchDirectorySafely } from "@/lib/services/talent-directory";
 import { TalentSearchQuery, type TalentSearchParams } from "@/lib/validation/api-schemas";
 import { TalentTable } from "@/components/talent/TalentTable";
 import { TalentFilters } from "@/components/talent/TalentFilters";
+import { TalentMap } from "@/components/talent/TalentMap";
+import { groupByLocation } from "@/lib/talent/map-pins";
 import { EmployerBar } from "@/components/employers/EmployerBar";
 import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailable";
 import { checkEmployerGate } from "@/lib/employers/session";
@@ -46,8 +48,8 @@ export function generateMetadata(): Metadata {
     title: `Contrata talento | ${brand.name}`,
     robots: { index: false, follow: false },
     description:
-      "Busca personas capacitadas y listas para trabajar: por su nombre, por área de trabajo " +
-      "y por cercanía.",
+      "Busca personas capacitadas y listas para trabajar: por su nombre, por área de trabajo, " +
+      "por área metropolitana y por cercanía.",
   };
 }
 
@@ -89,15 +91,13 @@ export default async function EmpleadoresPage({
   // value costs the employer THAT filter and nothing else — see the note on
   // `parseFilters`, which is where this page's search box was quietly broken.
   const { filters: raw, ignored } = parseFilters(searchParams);
-  const { zip, radius, ...rest } = raw;
+  const { zip, radius } = raw;
 
-  const origin = originForZip(zip, radius);
-  // A ZIP that was typed but not recognised: the search still runs without a
-  // radius, and the page says so rather than showing an empty list that looks
-  // like "nobody is near you".
-  const badZip = Boolean(zip) && origin === null;
-
-  const filters: TalentSearchFilters = { ...rest, ...(origin ?? {}) };
+  // ZIP → origin and `metro=` → a CBSA code both happen in the service, so this
+  // page and `/api/talent/search` cannot end up disagreeing about what a query
+  // string means. `metro` comes back with three possible readings, each of which
+  // gets its own sentence below.
+  const { filters, metro, badZip } = resolveSearchFilters(raw);
   const result = await searchDirectorySafely({ ...filters, limit: 24 }, headers(), employer);
 
   // "Nobody matched what you asked for" and "nobody has published yet" are the
@@ -105,7 +105,7 @@ export default async function EmpleadoresPage({
   // fewer filters when they used none sends them looking for a mistake they did
   // not make; a typed ZIP counts even when it did not resolve, since that is
   // still someone having narrowed the search.
-  const searched = Boolean(raw.query || raw.category || raw.availability || zip);
+  const searched = Boolean(raw.query || raw.category || raw.availability || zip || raw.metro);
 
   // A query where nothing survives the two-character floor in
   // `mcv_talent_name_query` matches nobody, deliberately — a one-letter prefix
@@ -138,12 +138,19 @@ export default async function EmpleadoresPage({
         <p className="max-w-2xl text-base leading-snug text-text-secondary">
           Aquí se buscan <strong>personas</strong>, no empleos: cada una terminó su currículum y
           pidió aparecer en esta lista. Si ya sabes a quién quieres, escribe su nombre; si no,
-          elige un área de trabajo y acota por cercanía. Cada currículum que abras o descargues
-          queda registrado a nombre de tu cuenta.
+          elige un área de trabajo, una ciudad o área metropolitana, y acota por cercanía. Cada
+          currículum que abras o descargues queda registrado a nombre de tu cuenta.
         </p>
       </header>
 
-      <TalentFilters filters={filters} zip={zip ?? ""} radius={radius} />
+      <TalentFilters
+        filters={filters}
+        zip={zip ?? ""}
+        radius={radius}
+        /* The RESOLVED title when it resolved, so the box shows what the results
+           were actually filtered by rather than the abbreviation typed. */
+        metro={metro.status === "exact" ? metro.metro.title : (raw.metro ?? "")}
+      />
 
       {ignored.length > 0 && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -156,6 +163,69 @@ export default async function EmpleadoresPage({
       {badZip && (
         <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           No reconocimos el código postal <strong>{zip}</strong>. Revísalo, o busca sin él.
+        </p>
+      )}
+
+      {/*
+        The metro, in the employer's own words back to them. Three outcomes and
+        three messages, because they are three different situations and one
+        shared message would misdescribe two of them:
+
+          · resolved  — say WHICH area, since "Houston" is not what the results
+                        were filtered by; `Houston-Pasadena-The Woodlands, TX` is,
+                        and the difference is what tells them Katy is included.
+          · ambiguous — offer the choices as links. Picking one for them would
+                        answer a question they did not ask, and they would read
+                        the results as though it had been theirs.
+          · unknown   — admit it, exactly like the ZIP message above. Filtering
+                        by nothing and showing the whole country would read as an
+                        answer.
+      */}
+      {metro.status === "exact" && (
+        <p className="rounded-xl border border-border bg-panel px-4 py-3 text-sm text-text-secondary">
+          Mostrando el área de <strong className="text-text-primary">{metro.metro.title}</strong>,
+          que incluye las poblaciones vecinas desde donde se viaja a trabajar.{" "}
+          {/*
+            A plain `<a>`, not `next/link`, and the same for the options below.
+            `TalentFilters` is a native GET form, so a search is a document
+            navigation and its inputs remount with the values the server just
+            resolved. A client-side `Link` would update the results and leave the
+            metro box holding whatever was typed before — "portland" above a
+            table filtered to Portland, Oregon. `Limpiar` inside that form is a
+            plain anchor for the same reason.
+          */}
+          <a href={clearParam(searchParams, "metro")} className="font-medium text-accent-dark hover:underline">
+            Quitar
+          </a>
+        </p>
+      )}
+
+      {metro.status === "ambiguous" && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p>
+            Hay varias áreas que coinciden con <strong>{metro.typed}</strong>. Elige una — por
+            ahora la búsqueda no está limitada por zona:
+          </p>
+          <ul className="mt-2 flex flex-col gap-1">
+            {metro.options.map((option) => (
+              <li key={option.code}>
+                <a
+                  href={withParam(searchParams, "metro", option.title)}
+                  className="font-medium text-accent-dark hover:underline"
+                >
+                  {option.title}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {metro.status === "unknown" && (
+        <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          No reconocimos <strong>{metro.typed}</strong> como una ciudad o área metropolitana de
+          Estados Unidos. Escribe el nombre de la ciudad y elige una de las opciones que
+          aparezcan, o busca sin ese filtro.
         </p>
       )}
 
@@ -207,12 +277,24 @@ export default async function EmpleadoresPage({
               ? "1 persona encontrada"
               : `${result.total} personas encontradas`}
           </p>
+          {/*
+            The map goes ABOVE the table, and does not replace it. The table is
+            still how an employer compares people on the same few attributes —
+            that argument has not changed. The map answers the one question a
+            table is bad at: *where* are they, relative to each other and to the
+            place hiring. Both read the same result set, so the count above
+            describes both.
+          */}
+          {/* Grouped on the SERVER, so only the pins cross to the client — see
+              the note in `TalentMap`. */}
+          <TalentMap pins={groupByLocation(result.profiles)} />
           <TalentTable profiles={result.profiles} />
           {result.total > result.profiles.length && (
             <Pager
               filters={filters}
               zip={zip}
               radius={radius}
+              metro={raw.metro}
               shown={result.profiles.length}
               total={result.total}
             />
@@ -269,6 +351,41 @@ function EmptyState({
 }
 
 /**
+ * The current query string with one parameter replaced, or removed.
+ *
+ * Used by the metro messages: "Quitar" and each "did you mean" option have to
+ * preserve the rest of the search, because dropping the category an employer
+ * chose in order to answer a question about the city would be its own bug. The
+ * offset goes with them — a new filter set starts at page one.
+ */
+function editedParams(
+  searchParams: Record<string, string | string[] | undefined>,
+  key: string,
+  value: string | null,
+): string {
+  const q = new URLSearchParams();
+  for (const [name, raw] of Object.entries(searchParams)) {
+    if (name === key || name === "offset") continue;
+    const single = Array.isArray(raw) ? raw[0] : raw;
+    if (single) q.set(name, single);
+  }
+  if (value) q.set(key, value);
+  const query = q.toString();
+  return query ? `/empleadores?${query}` : "/empleadores";
+}
+
+const withParam = (
+  searchParams: Record<string, string | string[] | undefined>,
+  key: string,
+  value: string,
+) => editedParams(searchParams, key, value);
+
+const clearParam = (
+  searchParams: Record<string, string | string[] | undefined>,
+  key: string,
+) => editedParams(searchParams, key, null);
+
+/**
  * Parse the query string, dropping ONLY the parameters that are genuinely bad.
  *
  * This used to be `parsed.success ? parsed.data : {}`, and that one line made the
@@ -316,12 +433,15 @@ function Pager({
   filters,
   zip,
   radius,
+  metro,
   shown,
   total,
 }: {
   filters: TalentSearchFilters;
   zip?: string;
   radius?: number;
+  /** The metro as TYPED, not the resolved code — see the note inside. */
+  metro?: string;
   shown: number;
   total: number;
 }) {
@@ -329,14 +449,21 @@ function Pager({
   const params = (next: number) => {
     const q = new URLSearchParams();
     for (const [key, value] of Object.entries(filters)) {
-      // `latitude`/`longitude` are derived from the ZIP on every request, so the
-      // URL carries the ZIP the employer typed instead — shareable and readable.
-      if (["offset", "limit", "latitude", "longitude", "radiusMiles"].includes(key)) continue;
+      // Derived filters are rebuilt from the raw parameters on every request, so
+      // the URL carries what the employer typed instead: the ZIP rather than a
+      // lat/lng pair, and the metro's name rather than its CBSA code. Shareable,
+      // and readable by the person it is shared with.
+      if (
+        ["offset", "limit", "latitude", "longitude", "radiusMiles", "cbsaCode"].includes(key)
+      ) {
+        continue;
+      }
       if (value === undefined || value === null || value === "") continue;
       q.set(key, String(value));
     }
     if (zip) q.set("zip", zip);
     if (radius) q.set("radius", String(radius));
+    if (metro) q.set("metro", metro);
     if (next > 0) q.set("offset", String(next));
     return `/empleadores?${q.toString()}`;
   };

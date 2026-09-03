@@ -1,11 +1,18 @@
 import "server-only";
-import type { TalentProfilePublic, TalentSearchFilters, TalentSearchResult } from "@/types";
+import type {
+  MetroMatch,
+  TalentProfilePublic,
+  TalentSearchFilters,
+  TalentSearchResult,
+} from "@/types";
 import { getAnalytics } from "@/lib/analytics";
 import { getTalentStore } from "@/lib/repositories";
 import type { EmployerSession } from "@/lib/employers/session";
 import { clientIp } from "@/lib/rate-limit/policy";
 import { enforceRateLimit } from "@/lib/services/usage-guard";
 import { lookupZip } from "@/lib/geo/zip-lookup";
+import { resolveMetroQuery } from "@/lib/geo/cbsa-lookup";
+import type { TalentSearchParams } from "@/lib/validation/api-schemas";
 
 /**
  * The guarded read path for the public directory.
@@ -50,6 +57,48 @@ export function originForZip(
   };
 }
 
+/**
+ * Turn the parsed query string into store filters, and report what could not be
+ * resolved so the caller can say so.
+ *
+ * ── Why both readers go through this ────────────────────────────────────────
+ * `/empleadores` and `/api/talent/search` each turned `zip`/`radius` into an
+ * origin themselves, which was already one duplicated line too many; `metro`
+ * adds a three-way resolution on top. The page and its own API must not be able
+ * to disagree about what `?metro=Houston` means, for the same reason the rate
+ * limit lives in this file rather than in the route.
+ *
+ * Anything unresolved costs the employer THAT filter and nothing else. Widening
+ * a search on bad input is the wrong failure here — the results are read as the
+ * answer to what was asked, so a metro we did not recognise must not quietly
+ * return the whole country.
+ */
+export function resolveSearchFilters(params: TalentSearchParams): {
+  filters: TalentSearchFilters;
+  /** The metro, resolved: named, offered as choices, or admitted to. */
+  metro: MetroMatch;
+  /** True when a ZIP was typed and is not a ZIP we know. */
+  badZip: boolean;
+} {
+  const { zip, radius, metro: typedMetro, ...rest } = params;
+
+  const origin = originForZip(zip, radius);
+  const metro = resolveMetroQuery(typedMetro);
+
+  return {
+    filters: {
+      ...rest,
+      ...(origin ?? {}),
+      // Only an unambiguous metro filters anything. Guessing between
+      // "Portland, OR" and "Portland, ME" would answer a question the employer
+      // did not ask, and they would read the results as though it had.
+      ...(metro.status === "exact" ? { cbsaCode: metro.metro.code } : {}),
+    },
+    metro,
+    badZip: Boolean(zip) && origin === null,
+  };
+}
+
 export async function searchDirectory(
   filters: TalentSearchFilters,
   headers: Headers,
@@ -70,6 +119,11 @@ export async function searchDirectory(
     {
       ...(filters.category ? { talentCategory: filters.category } : {}),
       ...(filters.availability ? { availability: filters.availability } : {}),
+      // The RESOLVED code, never the words the employer typed. Five digits from
+      // OMB's closed list, so it is the same kind of value as `talentCategory`
+      // — which is what makes a city-level demand signal safe to collect here
+      // when `city`/`state` were rejected for being hand-typed free text.
+      ...(filters.cbsaCode ? { metroCode: filters.cbsaCode } : {}),
       resultCount: result.total,
       // Whether someone typed something, never WHAT they typed — people put
       // names into search boxes. See the analytics allow-list.

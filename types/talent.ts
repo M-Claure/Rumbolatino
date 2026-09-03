@@ -68,6 +68,41 @@ export type TalentAvailability = (typeof TALENT_AVAILABILITIES)[number];
 export const TALENT_YEARS_BUCKETS = ["sin_experiencia", "0_2", "3_5", "6_mas"] as const;
 export type TalentYearsBucket = (typeof TALENT_YEARS_BUCKETS)[number];
 
+/**
+ * A US metro area, as OMB defines one: a county with an urban core plus every
+ * county that commutes into it. Reference data, resolved from a ZIP by
+ * `lib/geo/cbsa-lookup.ts` — never captured, never asked for.
+ *
+ * `code` is the CBSA code (five digits, e.g. `26420`); `title` is OMB's own
+ * name for it (`Houston-Pasadena-The Woodlands, TX`), which is what employers
+ * see and what the autocomplete matches against.
+ */
+export interface MetroArea {
+  code: string;
+  title: string;
+  /** Metropolitan = 50k+ urban core; micropolitan = 10k–50k. */
+  kind: "metropolitan" | "micropolitan";
+  /** The metro's centre, for centring a map. See the note in the build script. */
+  latitude: number;
+  longitude: number;
+}
+
+/**
+ * What the `metro=` filter turned out to mean.
+ *
+ * Four outcomes rather than a nullable metro, because `/empleadores` owes the
+ * employer a different sentence for each: a resolved metro is named, an
+ * ambiguous one is offered as choices, an unrecognised one is admitted to, and
+ * an absent one says nothing at all. Collapsing any two of them produces the
+ * failure this codebase keeps running into — an empty table that reads as
+ * "nobody works there" when it means "we did not understand you".
+ */
+export type MetroMatch =
+  | { status: "absent" }
+  | { status: "exact"; metro: MetroArea }
+  | { status: "ambiguous"; typed: string; options: MetroArea[] }
+  | { status: "unknown"; typed: string };
+
 export const TALENT_PROFILE_STATUSES = [
   "published",
   "unpublished",
@@ -135,6 +170,45 @@ export interface TalentProfilePublic {
   city: string | null;
   state: string | null;
   country: string | null;
+  /**
+   * The metro area the person's ZIP falls in, resolved at publish time.
+   *
+   * Public because it is strictly COARSER than the city already above it — a
+   * CBSA is several counties — and because it is the label the map and the metro
+   * filter are built on. Null for a rural ZIP that belongs to no CBSA, and for
+   * anyone outside the US; both are simply absent from a metro search rather
+   * than being placed in the nearest one.
+   */
+  cbsaCode: string | null;
+  cbsaTitle: string | null;
+  /**
+   * Where to put this person's pin on the map: the CENTROID OF THEIR ZIP AREA,
+   * which is the same number the radius search already measures from.
+   *
+   * ── This is a real widening of the public shape, and it was decided ────────
+   * Everything else on this type is at city granularity or coarser. This is
+   * finer — it says which postal area of the city, roughly a five-mile answer.
+   * Three things make it acceptable, and all three have to keep holding:
+   *
+   *   1. It is a ZIP-AREA CENTROID, never an address. We never ask for a street
+   *      address, so there is nothing finer to leak. Everyone in one ZIP shares
+   *      one identical coordinate, which is why the map draws ONE pin per ZIP
+   *      area with a count on it rather than one pin per person — a pin is a
+   *      postal area, and cannot single out a house.
+   *   2. It is already derivable from what we publish. `distanceMiles` comes
+   *      back on every radius search, so three searches from three ZIPs
+   *      trilaterate this exact point. Publishing it discloses nothing new; it
+   *      stops pretending the number is hidden.
+   *   3. It is the purpose the ZIP was collected for. The funnel asks for a ZIP
+   *      so employers can find people near them, and `PublishDialog` says the
+   *      listing shows the person's area before anyone opts in.
+   *
+   * Null whenever the ZIP is unknown or non-US — the same population that is
+   * absent from radius search, and they are absent from the map too rather than
+   * being drawn somewhere plausible.
+   */
+  latitude: number | null;
+  longitude: number | null;
   publishedAt: string;
   /**
    * How far this person is from the SEARCHER, in miles. Present only on radius
@@ -204,15 +278,39 @@ export interface TalentSearchFilters {
   latitude?: number | null;
   longitude?: number | null;
   radiusMiles?: number | null;
+  /**
+   * A CBSA code, from the metro autocomplete. Strict equality against the code
+   * denormalized onto the listing at publish time — no radius, no merge.
+   *
+   * It composes with the radius filter rather than replacing it: the metro
+   * answers "who is in this labour market", the radius answers "who is within
+   * this drive of me", and an employer who sets both means the intersection.
+   * Deliberately kept as two controls — see the Step 5 note in
+   * `docs/talent-metro-search.md` for why the metro is not quietly widened by a
+   * radius of its own.
+   */
+  cbsaCode?: string | null;
   limit?: number;
   offset?: number;
 }
 
-/** Where a published profile sits on a map. Stored, but never returned publicly. */
+/**
+ * Where a published profile sits, as stored on the listing row.
+ *
+ * The coordinates are now ALSO on `TalentProfilePublic` — the map needs them —
+ * so this type is no longer "the private half of the location". What stays
+ * private is `postalCode`: the map has no use for the ZIP string itself, and
+ * although a centroid and a ZIP carry the same information, a bare ZIP column is
+ * the shape that ends up in a spreadsheet. See the note on
+ * `TalentProfilePublic.latitude`.
+ */
 export interface TalentLocation {
   postalCode: string | null;
   latitude: number | null;
   longitude: number | null;
+  /** Resolved from the ZIP at publish time by `lib/geo/cbsa-lookup.ts`. */
+  cbsaCode: string | null;
+  cbsaTitle: string | null;
 }
 
 /**

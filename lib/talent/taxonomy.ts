@@ -206,11 +206,20 @@ export const YEARS_BUCKET_LABELS: Record<TalentYearsBucket, string> = {
  * national-origin filter. None of them may be added here, whatever a customer
  * asks for. `years_bucket` exists as a coarse bucket for the same reason — see
  * the note on `TALENT_YEARS_BUCKETS` in `types/talent.ts`.
+ *
+ * `metro` (`0017`) is a CBSA code — OMB's definition of one labour market. It
+ * passes the test above because it is COARSER than the `city` beside it: a
+ * metro is several counties, so it cannot narrow to a neighbourhood the way a
+ * ZIP-level or district-level filter could. That distinction is the line to hold
+ * if a customer ever asks for a finer geographic filter than this list has: a
+ * commuting region is where somebody can work, and a neighbourhood is a proxy
+ * for who they are.
  */
 export const ALLOWED_FILTER_KEYS = [
   "query",
   "category",
   "state",
   "city",
+  "metro",
   "availability",
 ] as const;

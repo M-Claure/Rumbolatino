@@ -45,6 +45,8 @@ export type LimitedOperation =
   | "talent_publish"
   /** One directory search. No tokens, but it is the enumeration surface. */
   | "directory_search"
+  /** One metro-name autocomplete. Reference data only; typed into per keystroke. */
+  | "metro_lookup"
   /** Unlocking one candidate's contact details. The scraping vector. */
   | "contact_reveal"
   /** Creating an employer account. Keyed by IP: it runs before an identity exists. */
@@ -167,6 +169,19 @@ export const LIMITS: Record<LimitedOperation, LimitRule> = {
       "makes dozens of requests. This is not the control that stops scraping — the page " +
       "size is capped inside `talent_search` and the results carry no contact data at " +
       "all — it only stops a crawler from becoming a load problem.",
+  },
+  metro_lookup: {
+    limit: 600,
+    windowSeconds: HOUR,
+    reason:
+      "Its own bucket rather than a share of `directory_search`, because this one is " +
+      "driven by KEYSTROKES: an employer typing 'houston' behind a 250 ms debounce sends " +
+      "one or two requests, but a fast typist on a slow network sends more, and burning " +
+      "the search allowance on typeahead would lock someone out of the thing they were " +
+      "typing towards. Loose because it is the cheapest endpoint in the product — a " +
+      "prefix scan over 928 rows already in memory — and because it reads REFERENCE " +
+      "data: the same list of US metro areas for everyone, whether or not anybody is " +
+      "published there, so there is nothing here to enumerate about a person.",
   },
   contact_reveal: {
     limit: 40,

@@ -18,12 +18,14 @@
     "resume:list": "vite-node --config vitest.config.ts scripts/delete-resume.ts -- --list",
     "resume:delete": "vite-node --config vitest.config.ts scripts/delete-resume.ts --",
     "resume:costs": "vite-node --config vitest.config.ts scripts/delete-resume.ts -- --costs",
-    "resume:orphans": "vite-node --config vitest.config.ts scripts/delete-resume.ts -- --orphans"
+    "resume:orphans": "vite-node --config vitest.config.ts scripts/delete-resume.ts -- --orphans",
+    "geo:cbsa": "vite-node --config vitest.config.ts scripts/build-cbsa-table.ts --"
   },
   "dependencies": {
     "@sparticuz/chromium": "^148.0.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.45.4",
+    "leaflet": "^1.9.4",
     "next": "^14.2.35",
     "openai": "^7.4.0",
     "puppeteer-core": "^24.43.1",
@@ -34,6 +36,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",
+    "@types/leaflet": "^1.9.22",
     "@types/node": "^20.16.11",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.0",

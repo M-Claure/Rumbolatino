@@ -25,9 +25,15 @@ const USER = "user-1";
 
 /** A résumé that is ready to publish: finalized, generated, reachable. */
 async function readyProfile(
-  o: { finalize?: boolean; generate?: boolean; contact?: boolean } = {},
+  o: {
+    finalize?: boolean;
+    generate?: boolean;
+    contact?: boolean;
+    /** The ZIP the funnel captured. `null` = somebody outside the US. */
+    postalCode?: string | null;
+  } = {},
 ) {
-  const { finalize = true, generate = true, contact = true } = o;
+  const { finalize = true, generate = true, contact = true, postalCode = "77002" } = o;
   const profile = await store.createResumeProfile(USER, {
     targetRole: "Cosmetóloga",
     location: "Houston, TX",
@@ -37,6 +43,12 @@ async function readyProfile(
     lastName: "Gutiérrez",
     city: "Houston",
     state: "TX",
+    // Derived from the ZIP by `lib/geo/location-answer.ts` in the funnel, so a
+    // fixture that set the ZIP without them would be a state the funnel cannot
+    // produce.
+    ...(postalCode
+      ? { postalCode, latitude: 29.7594, longitude: -95.3594 }
+      : { postalCode: null, latitude: null, longitude: null }),
     ...(contact ? { email: "maria@correo.com", phone: "555 123 4567" } : {}),
   });
   if (generate) {
@@ -151,6 +163,39 @@ describe("the published listing", () => {
     expect(listing.profile.category).toBe("belleza"); // targetRole "Cosmetóloga"
     // Nobody stated a start date, so the listing promises nothing.
     expect(listing.profile.availability).toBe("flexible");
+  });
+
+  it("resolves the metro from the captured ZIP, once, at publish time", async () => {
+    // The spec's "resolve once and store it, so employer searches are fast".
+    // Nobody is asked which metro they live in — it is a table lookup on the ZIP
+    // the funnel already captured, written onto the row the search reads.
+    const profile = await readyProfile();
+    await publish(profile);
+    const listing = (await talent.getByFunnelId(profile.id))!;
+    expect(listing.profile.cbsaCode).toBe("26420");
+    expect(listing.profile.cbsaTitle).toBe("Houston-Pasadena-The Woodlands, TX");
+  });
+
+  it("publishes the ZIP-area centroid as the map coordinate", async () => {
+    const profile = await readyProfile();
+    await publish(profile);
+    const listing = (await talent.getByFunnelId(profile.id))!;
+    expect(listing.profile.latitude).toBe(29.7594);
+    expect(listing.profile.longitude).toBe(-95.3594);
+  });
+
+  it("leaves the metro and the coordinates null for someone with no US ZIP", async () => {
+    // They are then absent from metro search and off the map, rather than being
+    // placed at a plausible-looking point. The listing itself still works: the
+    // name, trade and résumé are all there and an unfiltered search finds them.
+    const profile = await readyProfile({ postalCode: null });
+    await publish(profile);
+    const listing = (await talent.getByFunnelId(profile.id))!;
+    expect(listing.profile.cbsaCode).toBeNull();
+    expect(listing.profile.cbsaTitle).toBeNull();
+    expect(listing.profile.latitude).toBeNull();
+    expect((await talent.search({})).total).toBe(1);
+    expect((await talent.search({ cbsaCode: "26420" })).total).toBe(0);
   });
 
   it("shows the full name, which is what the popup says employers will see", async () => {

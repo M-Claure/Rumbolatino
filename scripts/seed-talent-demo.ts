@@ -55,6 +55,7 @@ import type {
 } from "@/types";
 import { PUBLISH_TERMS_VERSION, TERMS_VERSION } from "@/lib/legal/terms";
 import { lookupZip } from "@/lib/geo/zip-lookup";
+import { lookupCbsaForZip } from "@/lib/geo/cbsa-lookup";
 import { renderResumeHtml } from "@/lib/resume/resume-renderer";
 import { suggestCategory } from "@/lib/talent/classify";
 import { labelForCategory } from "@/lib/talent/taxonomy";
@@ -497,6 +498,17 @@ async function seed(admin: SupabaseClient, args: Args): Promise<void> {
         .maybeSingle();
       const previous = existingListing as { id: string; slug: string } | null;
 
+      // Resolved exactly as `publishTalentProfile` does, so a seeded listing is
+      // indistinguishable from a real one — including being findable by metro.
+      const metro = lookupCbsaForZip(p.personal.postalCode);
+      const location = {
+        postalCode: p.personal.postalCode,
+        latitude: p.personal.latitude,
+        longitude: p.personal.longitude,
+        cbsaCode: metro?.code ?? null,
+        cbsaTitle: metro?.title ?? null,
+      };
+
       const projection = projectTalentProfile({
         resume: p.resume,
         personal: p.personal,
@@ -504,6 +516,7 @@ async function seed(admin: SupabaseClient, args: Args): Promise<void> {
         category,
         availability: "flexible",
         yearsBucket,
+        location,
         slug:
           previous?.slug ??
           buildTalentSlug(`${person.firstName} ${person.lastName}`, randomBytes(6).toString("hex").slice(0, 8)),
@@ -532,9 +545,11 @@ async function seed(admin: SupabaseClient, args: Args): Promise<void> {
             city: pub.city,
             state: pub.state,
             country: pub.country,
-            postal_code: p.personal.postalCode,
-            latitude: p.personal.latitude,
-            longitude: p.personal.longitude,
+            postal_code: location.postalCode,
+            latitude: location.latitude,
+            longitude: location.longitude,
+            cbsa_code: location.cbsaCode,
+            cbsa_title: location.cbsaTitle,
             status: "published",
             published_at: pub.publishedAt,
             expires_at: talentExpiryFrom(publishedAt),

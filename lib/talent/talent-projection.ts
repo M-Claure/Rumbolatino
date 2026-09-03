@@ -35,6 +35,7 @@ import type {
   TalentEducationBlock,
   TalentExperienceBlock,
   TalentLanguageBlock,
+  TalentLocation,
   TalentProjection,
   TalentYearsBucket,
 } from "@/types";
@@ -71,6 +72,18 @@ export interface TalentProjectionInput {
   category: TalentCategory;
   availability: TalentAvailability;
   yearsBucket: TalentYearsBucket;
+  /**
+   * ZIP-derived location: the coordinates the map plots and the metro the metro
+   * filter matches on.
+   *
+   * An ARGUMENT for the same reason `category` is one — resolving it needs the
+   * bundled ZIP and CBSA tables, which are `server-only`, and this module is
+   * pure and must stay importable from anywhere. `talent-publish.ts` resolves it
+   * once and passes the same object here and to `TalentDirectoryStore.publish`,
+   * so the public projection and the stored row cannot disagree about where
+   * somebody is.
+   */
+  location: TalentLocation;
   /** Built by the caller (needs randomness); see `buildTalentSlug`. */
   slug: string;
   publishedAt: string;
@@ -259,6 +272,14 @@ export function projectTalentProfile(input: TalentProjectionInput): TalentProjec
       city,
       state,
       country: personal?.country?.trim() || null,
+      // Straight through from the resolved location, never re-derived here.
+      // A listing whose ZIP is unknown or non-US carries nulls and is absent
+      // from both the metro filter and the map, rather than being drawn at a
+      // plausible-looking point it was never measured at.
+      cbsaCode: input.location.cbsaCode,
+      cbsaTitle: input.location.cbsaTitle,
+      latitude: input.location.latitude,
+      longitude: input.location.longitude,
       publishedAt: input.publishedAt,
     },
     contact: {

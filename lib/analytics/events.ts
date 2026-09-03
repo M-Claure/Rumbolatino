@@ -115,6 +115,18 @@ export const SAFE_PROPERTY_KEYS = [
   "yearsBucket",
   "resultCount",
   "hasQuery",
+  /**
+   * The CBSA code an employer filtered by — five digits from OMB's closed list
+   * of ~930 metro areas, so it is the same kind of value as `talentCategory`
+   * and cannot carry free text. The employer's TYPED words never come here:
+   * `metro=Houston` is resolved against the reference table first, and only the
+   * resolved code is sent, which is also why an ambiguous or unrecognised
+   * search reports nothing at all rather than the string.
+   *
+   * It is the CITY-level demand signal `city`/`state` were rejected for being —
+   * those are hand-typed by the job seeker, this is a lookup result.
+   */
+  "metroCode",
 ] as const;
 
 export type AnalyticsProps = Partial<Record<(typeof SAFE_PROPERTY_KEYS)[number], string | number | boolean>>;

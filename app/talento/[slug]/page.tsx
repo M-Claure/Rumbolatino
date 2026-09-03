@@ -6,6 +6,8 @@ import { checkEmployerGate, resolveEmployerSession } from "@/lib/employers/sessi
 import { EmployerBar } from "@/components/employers/EmployerBar";
 import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailable";
 import { ResumePreview } from "@/components/talent/ResumePreview";
+import { TalentMap } from "@/components/talent/TalentMap";
+import { groupByLocation } from "@/lib/talent/map-pins";
 import {
   AVAILABILITY_LABELS,
   YEARS_BUCKET_LABELS,
@@ -76,6 +78,7 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
   if (!profile) notFound();
 
   const place = [profile.city, profile.state, profile.country].filter(Boolean).join(", ");
+  const pins = groupByLocation([profile]);
 
   // Read through `revealContact` rather than a plain select, so viewing this
   // panel is written to `contact_reveals` — and now with a real `employerId`,
@@ -105,10 +108,24 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
         <p className="text-lg font-semibold text-text-primary">{profile.headline}</p>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-text-secondary">
           {place && <span>📍 {place}</span>}
+          {/* The metro, when the ZIP resolved to one. Beside the city rather
+              than instead of it: the city is where they say they are, the metro
+              is the labour market that contains it, and an employer scanning
+              this page wants to know both. */}
+          {profile.cbsaTitle && <span>🧭 {profile.cbsaTitle}</span>}
           <span>🗂️ {YEARS_BUCKET_LABELS[profile.yearsBucket]}</span>
           <span>🕒 {AVAILABILITY_LABELS[profile.availability]}</span>
         </div>
       </header>
+
+      {/*
+        One pin, on the same terms as the search map: the centroid of this
+        person's postal area, never an address. Mounted only when there IS a
+        coordinate — a rural or non-US ZIP renders no map rather than an empty
+        one centred on nothing, which is why `groupByLocation` is checked here
+        instead of leaving it to the component.
+      */}
+      {pins.length > 0 && <TalentMap pins={pins} compact />}
 
       <section className="rounded-2xl border-2 border-accent bg-white p-5">
         <h2 className="text-base font-bold text-text-primary">Cómo contactar</h2>

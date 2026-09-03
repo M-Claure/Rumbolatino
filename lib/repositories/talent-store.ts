@@ -46,9 +46,13 @@ export interface PublishTalentInput {
   /** The public projection, slug included. */
   profile: TalentProfilePublic;
   /**
-   * Coordinates for radius search. Stored on the row but never returned by the
-   * public read functions — an employer learns that someone is 12 miles away,
-   * not the point they were measured from.
+   * The ZIP-derived location: coordinates for radius search and the map, plus
+   * the metro the metro filter matches on.
+   *
+   * The same object the caller passed to `projectTalentProfile`, so the row and
+   * the public projection cannot disagree. `postal_code` stays out of every
+   * public read function; the coordinates and the metro no longer do — see the
+   * note on `TalentProfilePublic.latitude`.
    */
   location: TalentLocation;
   contact: TalentContact;
@@ -250,6 +254,11 @@ export class MemoryTalentStore implements TalentDirectoryStore {
         const p = row.profile;
         if (filters.category && p.category !== filters.category) return false;
         if (filters.availability && p.availability !== filters.availability) return false;
+        // Strict equality on the metro, matching `talent_search`. A listing with
+        // no metro — a rural ZIP, or no US ZIP at all — is excluded rather than
+        // being treated as "matches everything", which is the whole difference
+        // between "absent from a metro search" and "shown in every one".
+        if (filters.cbsaCode && p.cbsaCode !== filters.cbsaCode) return false;
         if (origin && (distance === null || distance > radius)) return false;
         if (!searching) return true;
         // Prefix matching, ANDed, so `mar gonz` finds María González and does
@@ -361,6 +370,10 @@ interface TalentProfileRow {
   city: string | null;
   state: string | null;
   country: string | null;
+  cbsa_code: string | null;
+  cbsa_title: string | null;
+  latitude: number | null;
+  longitude: number | null;
   status: string;
   published_at: string;
   expires_at: string;
@@ -394,6 +407,13 @@ function rowToPublic(row: TalentProfileRow): TalentProfilePublic {
     city: row.city,
     state: row.state,
     country: row.country,
+    cbsaCode: row.cbsa_code ?? null,
+    cbsaTitle: row.cbsa_title ?? null,
+    // `double precision` arrives as a number from PostgREST, but a row read
+    // through `select("*")` on an older listing has neither column at all —
+    // hence the nullish fallbacks rather than a cast.
+    latitude: row.latitude ?? null,
+    longitude: row.longitude ?? null,
     publishedAt: row.published_at,
   };
 }
@@ -439,6 +459,12 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
           postal_code: input.location.postalCode,
           latitude: input.location.latitude,
           longitude: input.location.longitude,
+          // Denormalized so a metro search is an indexed equality test instead
+          // of a join against 30,000 ZIPs. Re-derived on every publish, so
+          // fixing a ZIP fixes the listing's metro; `npm run geo:cbsa --
+          // --backfill` is what moves listings when the DELINEATION changes.
+          cbsa_code: input.location.cbsaCode,
+          cbsa_title: input.location.cbsaTitle,
           status: "published",
           published_at: p.publishedAt,
           expires_at: input.expiresAt,
@@ -532,6 +558,7 @@ export class SupabaseTalentStore implements TalentDirectoryStore {
       p_lat: filters.latitude ?? null,
       p_lng: filters.longitude ?? null,
       p_radius_miles: filters.radiusMiles ?? 25,
+      p_cbsa: filters.cbsaCode ?? null,
       p_limit: filters.limit ?? 24,
       p_offset: filters.offset ?? 0,
     });

@@ -86,6 +86,13 @@ function input(o: Partial<TalentProjectionInput> = {}): TalentProjectionInput {
     category: "belleza",
     availability: "inmediata",
     yearsBucket: "3_5",
+    location: {
+      postalCode: "77002",
+      latitude: 29.7594,
+      longitude: -95.3594,
+      cbsaCode: "26420",
+      cbsaTitle: "Houston-Pasadena-The Woodlands, TX",
+    },
     slug: "maria-g-a1b2c3",
     publishedAt: "2026-08-24T00:00:00.000Z",
     ...o,
@@ -106,8 +113,74 @@ describe("the public projection carries no contact PII", () => {
       "slug", "displayName", "headline", "summary", "category", "skills",
       "certifications", "education", "experience", "languages", "yearsBucket",
       "availability", "city", "state", "country", "publishedAt",
+      // Added for the metro filter and the map. The metro is COARSER than the
+      // city already on this list; the coordinates are FINER, and that was the
+      // one real widening — a ZIP-area centroid, never an address, and already
+      // derivable from the `distanceMiles` these searches return. The argument
+      // is written out on `TalentProfilePublic.latitude`; this line is the part
+      // that made someone read it.
+      "cbsaCode", "cbsaTitle", "latitude", "longitude",
     ];
     expect(Object.keys(projectTalentProfile(input()).public).sort()).toEqual([...expected].sort());
+  });
+
+  it("takes the map fields from the resolved location, and never re-derives them", () => {
+    // The projection is pure and the ZIP tables are `server-only`, so it must
+    // not attempt a lookup — `talent-publish.ts` resolves once and passes the
+    // same object here and to the store, which is what stops the public row and
+    // the stored row from describing two different places.
+    //
+    // `personal` here says Houston and the location says Dallas. That cannot
+    // happen in production; the point is that the projection reports what it was
+    // GIVEN rather than reaching for `personal.latitude`, which is the mistake
+    // that would put someone on the map at coordinates the row does not hold.
+    const { public: pub } = projectTalentProfile(
+      input({
+        location: {
+          postalCode: "75201",
+          latitude: 32.7876,
+          longitude: -96.7995,
+          cbsaCode: "19100",
+          cbsaTitle: "Dallas-Fort Worth-Arlington, TX",
+        },
+      }),
+    );
+    expect(pub).toMatchObject({
+      latitude: 32.7876,
+      longitude: -96.7995,
+      cbsaCode: "19100",
+      cbsaTitle: "Dallas-Fort Worth-Arlington, TX",
+    });
+  });
+
+  it("carries nulls through for someone with no US ZIP, rather than a guess", () => {
+    // These people are absent from the metro filter and off the map. Both are
+    // better than being drawn at a plausible-looking point: a marker is read as
+    // a fact about where somebody is.
+    const { public: pub } = projectTalentProfile(
+      input({
+        location: {
+          postalCode: null,
+          latitude: null,
+          longitude: null,
+          cbsaCode: null,
+          cbsaTitle: null,
+        },
+      }),
+    );
+    expect(pub.latitude).toBeNull();
+    expect(pub.longitude).toBeNull();
+    expect(pub.cbsaCode).toBeNull();
+    expect(pub.cbsaTitle).toBeNull();
+  });
+
+  it("keeps the POSTAL CODE out of the public half", () => {
+    // The centroid and the ZIP carry the same information, and the map needs the
+    // first. The second is the shape that ends up in a spreadsheet, and nothing
+    // public has a use for it — see the note on `TalentLocation`.
+    const { public: pub } = projectTalentProfile(input());
+    expect(JSON.stringify(pub)).not.toContain("77002");
+    expect(pub).not.toHaveProperty("postalCode");
   });
 
   it("never contains a contact channel anywhere in the tree", () => {
