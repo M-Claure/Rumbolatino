@@ -173,7 +173,11 @@ export async function publishTalentProfile(
     personal,
     profile: { targetRole: profile.targetRole, location: profile.location },
     category,
-    // Nobody was asked, so the listing promises nothing it cannot keep.
+    // Nobody was asked, so the listing promises nothing it cannot keep. This is
+    // a PLACEHOLDER satisfying a not-null column, never an answer: it must not
+    // be rendered as a claim about the person. `/talento/[slug]` printed it as
+    // "Mi fecha de inicio es flexible" and that was a bug — see the note on
+    // `AVAILABILITY_LABELS`.
     availability: "flexible",
     yearsBucket: estimateYearsBucket(state.experience, now.getUTCFullYear()),
     // The same object reaches the store below, so the public projection and the

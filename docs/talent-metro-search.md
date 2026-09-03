@@ -150,6 +150,49 @@ submitted, and no message can explain it because the server never heard. And
 `?metro=Houston-Pasadena-The Woodlands, TX` says what it filtered by where
 `?metro=26420` does not; employers share these URLs.
 
+### Showing the metro on a profile
+
+`/talento/[slug]` prints the metro beside the city **only when it adds
+information**. Printed unconditionally it read as the location written twice —
+"📍 Miami, FL, Estados Unidos" beside "🧭 Miami-Fort Lauderdale-West Palm Beach,
+FL".
+
+`metroAddsPlace` (`lib/talent/location-label.ts`, pure) compares the city against
+the metro's **lead** city, not the whole title. A CBSA title names its secondary
+cities too, so testing the full string would hide the metro from the people it is
+most informative for:
+
+| City | Metro | |
+| --- | --- | --- |
+| Miami | Miami-Fort Lauderdale-West Palm Beach, FL | hidden — one fact twice |
+| Houston | Houston-Pasadena-The Woodlands, TX | hidden |
+| Katy | Houston-Pasadena-The Woodlands, TX | **shown** |
+| Sugar Land | Houston-Pasadena-The Woodlands, TX | **shown** |
+| Fort Lauderdale | Miami-Fort Lauderdale-West Palm Beach, FL | **shown** |
+| The Woodlands | Houston-Pasadena-The Woodlands, TX | **shown** |
+
+Containment is tested in both directions, not equality, because a lead city can
+itself be compound (`Winston-Salem, NC` → lead `Winston`; `Urban Honolulu, HI`
+has no hyphen but contains `Honolulu`). The state suffix comes off at the *last*
+comma first, so `Chicago-Naperville-Elgin, IL-IN` does not yield `IL` as a city.
+
+The line is prefixed "Área de", because the bare title does not say it is a metro
+area.
+
+### What this page does NOT show: availability
+
+`talent-publish.ts` stamps every listing `flexible` — nobody is asked for a start
+date, and the publish step is one checkbox. That value satisfies a not-null
+column; it is not an answer. The profile header rendered it as "Mi fecha de
+inicio es flexible", in the first person, about something the candidate never
+told us, which is the product inventing a fact about a person. It is gone.
+
+`AVAILABILITY_LABELS` and `AVAILABILITY_SHORT_LABELS` are kept and unused, the
+same way `search_tsv` is: the filter still exists in `TalentSearchQuery` and
+`talent_search` so a bookmarked `?availability=` keeps working, and those strings
+are what the answer will render as if the funnel ever asks. Do not wire them back
+into a component before that question exists.
+
 ### The autocomplete knows nothing about anybody
 
 `GET /api/talent/metros?q=` returns the same 928 metros for every caller, whether

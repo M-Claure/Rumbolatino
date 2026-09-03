@@ -167,6 +167,20 @@ export function isTalentCategory(value: unknown): value is TalentCategory {
 // Labels for the other two public enums
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ── Nothing renders these, and that is deliberate ──────────────────────────
+ * Every listing is stamped `flexible` by `talent-publish.ts` because the publish
+ * step is one checkbox and nobody is asked for a start date. So these strings
+ * describe a value no user ever chose, and printing one states a fact about a
+ * person that they never gave us — `/talento/[slug]` did exactly that, in the
+ * first person ("Mi fecha de inicio es flexible"), until it was removed.
+ *
+ * They are KEPT rather than deleted for the same reason `search_tsv` is: the
+ * filter still exists in `TalentSearchQuery` and in `talent_search`, so a URL
+ * carrying `?availability=` keeps working, and the day the funnel asks for a
+ * start date this is what the answer renders as. Do not wire either of these
+ * back into a component before that question exists.
+ */
 export const AVAILABILITY_LABELS: Record<TalentAvailability, string> = {
   inmediata: "Puedo empezar de inmediato",
   dos_semanas: "Puedo empezar en dos semanas",

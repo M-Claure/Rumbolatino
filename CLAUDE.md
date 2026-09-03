@@ -223,7 +223,7 @@ the same ceiling.
 | `lib/employers/` | the ONE login: the gate · the namespaced session clients · pure email/password policy · what both auth callbacks share |
 | `lib/auth-redirect.ts` | pure open-redirect guard for `/auth/*` — allow-listed `?next=` |
 | `app/auth/` | `confirm` (`token_hash` → `verifyOtp`, any device) · `callback` (PKCE `code`) |
-| `lib/talent/` | directory taxonomy (code constants) · deterministic classifier · résumé→profile projection with the public/contact split · résumé delivery (preview vs download) · map pins (pure, grouped by ZIP area) |
+| `lib/talent/` | directory taxonomy (code constants) · deterministic classifier · résumé→profile projection with the public/contact split · résumé delivery (preview vs download) · map pins (pure, grouped by ZIP area) · when a metro label adds information |
 | `lib/geo/` | bundled ZIP table (city/state/centroid) · bundled ZIP→CBSA table · the location answer's deterministic resolver · metro autocomplete + `metro=` resolution |
 | `lib/services/answer-pipeline.ts` | the spec §9 answer pipeline |
 | `lib/resume/` | generator · HTML renderer (language-aware) · PDF (two renderers: puppeteer local, `@sparticuz/chromium` serverless) · **artifact writer** (saves the PDF on every generation, and on every translation) · source tracing · **analyzer** (improvement loop) · **proofreader** (final spelling/grammar/format pass before finalize) · **translator** (on-demand English version) |
@@ -562,6 +562,30 @@ the directory calls a model**: the category comes from a keyword classifier
     own limit, `metro_lookup`, rather than a share of `directory_search`: it is
     keystroke-driven, and spending the search allowance on typeahead would lock
     an employer out of the search they were typing towards.
+- **The metro is shown on a profile only when it is not the city said twice.**
+  Printed unconditionally it read as duplication for most people — "Miami, FL"
+  beside "Miami-Fort Lauderdale-West Palm Beach, FL" is one fact in two lines.
+  `metroAddsPlace` (`lib/talent/location-label.ts`, pure) compares the city
+  against the metro's **lead** city, not the whole title: a CBSA title names its
+  secondary cities too, and the person in The Woodlands or Fort Lauderdale is
+  exactly who the metro is informative for. Hidden for Miami and Houston, shown
+  for Katy and Sugar Land.
+- **`availability` is STORED but never RENDERED, and that is an invariant.**
+  `talent-publish.ts` stamps every listing `flexible` because the publish step is
+  one checkbox and nobody is ever asked for a start date. It satisfies a not-null
+  column; it is not an answer. `/talento/[slug]` used to print it as "Mi fecha de
+  inicio es flexible" — first person, on a page an employer reads as the
+  candidate's own words, about something the candidate was never asked. That is
+  the product inventing a fact about a person, which is the one thing this
+  codebase does not do anywhere else; it is the same argument that removed the
+  availability DROPDOWN from `TalentFilters` for being a filter over data nobody
+  supplied. `AVAILABILITY_LABELS` and `AVAILABILITY_SHORT_LABELS` are kept, both
+  unused, as what the answer will render as if the funnel ever asks. Do not wire
+  either back into a component before that question exists.
+  Note `yearsBucket` is NOT in this position and is still shown: it is derived by
+  `estimateYearsBucket` from the dates on the person's own résumé, deliberately
+  understating when they do not parse. Derived from what someone told us is not
+  the same as invented.
 - **Results are also drawn on a MAP, one pin per ZIP AREA — never per person.**
   Leaflet + OpenStreetMap: free, no API key, no billing, nothing to provision,
   the same reasoning that keeps the ZIP table out of a geocoding API. Everyone in

@@ -8,11 +8,8 @@ import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailabl
 import { ResumePreview } from "@/components/talent/ResumePreview";
 import { TalentMap } from "@/components/talent/TalentMap";
 import { groupByLocation } from "@/lib/talent/map-pins";
-import {
-  AVAILABILITY_LABELS,
-  YEARS_BUCKET_LABELS,
-  labelForCategory,
-} from "@/lib/talent/taxonomy";
+import { YEARS_BUCKET_LABELS, labelForCategory } from "@/lib/talent/taxonomy";
+import { metroAddsPlace } from "@/lib/talent/location-label";
 import { labelForType } from "@/lib/experience-types";
 import { headers } from "next/headers";
 import { getTalentStore } from "@/lib/repositories";
@@ -108,13 +105,38 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
         <p className="text-lg font-semibold text-text-primary">{profile.headline}</p>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-text-secondary">
           {place && <span>📍 {place}</span>}
-          {/* The metro, when the ZIP resolved to one. Beside the city rather
-              than instead of it: the city is where they say they are, the metro
-              is the labour market that contains it, and an employer scanning
-              this page wants to know both. */}
-          {profile.cbsaTitle && <span>🧭 {profile.cbsaTitle}</span>}
+          {/*
+            The metro, only when it is not the city said twice.
+
+            Printed unconditionally it read as duplication for most people —
+            "Miami, FL" beside "Miami-Fort Lauderdale-West Palm Beach, FL" is
+            one fact in two lines. It is genuinely informative for the person in
+            Katy or Sugar Land, which is who the metro filter exists for, so the
+            test is against the metro's LEAD city rather than dropping the line:
+            see `metroAddsPlace`. "Área de" is prefixed because the bare title
+            does not say it is a metro area.
+          */}
+          {metroAddsPlace(profile.city, profile.cbsaTitle) && (
+            <span>🧭 Área de {profile.cbsaTitle}</span>
+          )}
           <span>🗂️ {YEARS_BUCKET_LABELS[profile.yearsBucket]}</span>
-          <span>🕒 {AVAILABILITY_LABELS[profile.availability]}</span>
+          {/*
+            NO availability line here, deliberately, and it is not an oversight
+            to be tidied up later.
+
+            `talent-publish.ts` stamps every listing `flexible` because the
+            publish step is one checkbox and nobody is ever asked for a start
+            date. Rendering that stored placeholder printed "Mi fecha de inicio
+            es flexible" — first person, on a page an employer reads as the
+            candidate's own words — about something the candidate was never
+            asked. That is the product inventing a fact about a person, which is
+            the one thing this codebase does not do anywhere else: see the safety
+            rules in CLAUDE.md, and the same reasoning that removed the
+            availability DROPDOWN from `TalentFilters` for being a filter over
+            data nobody supplied.
+            If the funnel ever asks for a start date, put this back. Until then
+            the field stays stored and unrendered — a placeholder, not a claim.
+          */}
         </div>
       </header>
 
