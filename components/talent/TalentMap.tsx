@@ -220,7 +220,25 @@ export function TalentMap({
         // A height in `rem` rather than an aspect ratio: Leaflet measures its
         // container on init, and a container whose height depends on its
         // contents is zero pixels tall at that moment.
-        className={`${
+        // `isolate` is load-bearing, not styling. Leaflet's stylesheet gives its
+        // own panes and controls z-indexes in the 200–1000 range
+        // (`.leaflet-tile-pane` 200, `.leaflet-popup-pane` 700,
+        // `.leaflet-top`/`.leaflet-bottom` 1000) and mounts them inside a
+        // container it sets to `position: relative` with NO z-index — which is
+        // not a stacking context. So those numbers competed directly against the
+        // rest of the page, and beat the `z-50` on `ResumePreview`'s and
+        // `PublishDialog`'s full-screen overlays: opening a résumé from a table
+        // row left the map painted on top of it, with the résumé unreadable
+        // underneath. `isolation: isolate` makes this div a stacking context, so
+        // Leaflet's ordering applies only among its own children and the whole
+        // map takes part in the page as one ordinary box.
+        //
+        // Fixed HERE rather than by raising the dialogs, because the dialogs are
+        // not the problem and would not be the last victim — `MetroPicker`'s
+        // `z-20` listbox is the same collision waiting to happen. Out-bidding a
+        // third party's z-indexes is a race that has to be re-run every time one
+        // of them changes; containing them ends it.
+        className={`isolate ${
           compact ? "h-56" : "h-[26rem]"
         } w-full overflow-hidden rounded-2xl border border-border bg-panel [&_.leaflet-container]:font-sans`}
         role="application"
