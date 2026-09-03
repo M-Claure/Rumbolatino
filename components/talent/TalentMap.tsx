@@ -85,9 +85,62 @@ export function TalentMap({
       if (cancelled || !element) return;
 
       instance = L.map(element, {
-        // Off, because the map sits in a scrolling page: an employer flicking
-        // past it on a phone would otherwise zoom the map instead of scrolling.
-        scrollWheelZoom: false,
+        // ── Zoom, on every input device ──────────────────────────────────
+        // A mouse wheel and a trackpad's two-finger scroll both arrive as
+        // `wheel` events, and a trackpad PINCH arrives as `wheel` with
+        // `ctrlKey` — so this one option covers all three. It was off, on the
+        // argument that the map sits in a scrolling page; the deliberate cost
+        // of turning it on is that a wheel gesture with the pointer over the
+        // map zooms instead of scrolling the page past it (Leaflet calls
+        // `preventDefault` on every wheel event it handles). That is how every
+        // embedded map behaves, and the zoom buttons and keyboard `+`/`-` are
+        // still there for anyone who would rather not.
+        scrollWheelZoom: true,
+        // ── Why these two are tuned, and what they each do ───────────────
+        // Leaflet accumulates wheel deltas for `wheelDebounceTime` ms, then
+        // rounds the batch UP to a whole zoom level (`Math.ceil` against
+        // `zoomSnap` in `ScrollWheelZoom._performZoom`). So a batch is never
+        // less than one level, and the two knobs do different jobs: the debounce
+        // sets how many levels per SECOND are possible, and `wheelPxPerZoomLevel`
+        // caps how many a single big batch can produce.
+        //
+        // A trackpad matters here because it emits many small deltas rather than
+        // discrete notches, and a pinch on one arrives as `wheel` with a much
+        // larger delta still. Levels gained by one batch, measured in Chrome:
+        //
+        //     deltaY   180 (here)   60 (default)
+        //      −120        +1           +1      ← one mouse notch
+        //      −300        +1           +2
+        //      −600        +2           +4      ← trackpad pinch
+        //     −1200        +3           +4
+        //
+        // So 180 keeps a mouse notch at exactly one level — the thing a wheel
+        // user expects — and roughly halves the overshoot on a trackpad, where
+        // the default clears four levels at once and leaves the metro off screen.
+        wheelPxPerZoomLevel: 180,
+        // 40 → 60 ms: fewer batches per second, so a continuous sweep climbs at
+        // a readable rate. Short enough that one notch still feels immediate.
+        //
+        // The other way to smooth this is `zoomSnap: 0`, which drops the `ceil`
+        // and gives genuinely proportional zoom. Not taken: it parks the map on
+        // fractional zoom levels, where these raster tiles are upscaled and
+        // visibly soft, and a crisp basemap is worth more here than a perfectly
+        // continuous gesture.
+        wheelDebounceTime: 60,
+        // ── Fingers ──────────────────────────────────────────────────────
+        // Pinch-to-zoom, and it already worked: Leaflet defaults `touchZoom` to
+        // `Browser.touch`, which is true on iOS. Set explicitly so a future
+        // change to that default cannot silently take it away, and so this
+        // block reads as the whole answer to "how do I zoom" rather than
+        // leaving two thirds of it implicit.
+        touchZoom: true,
+        // The rubber-band at zoom 0 and at the tile layer's max of 18. It is
+        // what makes a pinch past the limit feel like a limit instead of a
+        // dead gesture.
+        bounceAtZoomLimits: true,
+        // Double-click and double-tap. The default, named here for the same
+        // reason as `touchZoom`.
+        doubleClickZoom: true,
         attributionControl: true,
       });
       map.current = instance;
