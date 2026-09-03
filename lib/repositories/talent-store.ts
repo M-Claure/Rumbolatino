@@ -36,7 +36,7 @@ import type {
   TalentSearchFilters,
   TalentSearchResult,
 } from "@/types";
-import { isTalentCategory } from "@/lib/talent/taxonomy";
+import { isTalentAvailability, isTalentCategory } from "@/lib/talent/taxonomy";
 import { nameSearchTokens } from "@/lib/talent/text";
 import { distanceMiles } from "@/lib/geo/zip-lookup";
 
@@ -366,7 +366,7 @@ interface TalentProfileRow {
   experience: unknown;
   languages: unknown;
   years_bucket: string;
-  availability: string;
+  availability: string | null;
   city: string | null;
   state: string | null;
   country: string | null;
@@ -403,7 +403,11 @@ function rowToPublic(row: TalentProfileRow): TalentProfilePublic {
     experience: (row.experience ?? []) as TalentProfilePublic["experience"],
     languages: (row.languages ?? []) as TalentProfilePublic["languages"],
     yearsBucket: row.years_bucket as TalentProfilePublic["yearsBucket"],
-    availability: row.availability as TalentProfilePublic["availability"],
+    // Validated rather than cast, unlike `years_bucket`: this column is
+    // NULLABLE since `0018` (null = never asked), and it is the one enum here
+    // whose absence is meaningful. A bad cast would turn "no answer" into a
+    // label on a profile page, which is the exact bug 0018 exists to end.
+    availability: isTalentAvailability(row.availability) ? row.availability : null,
     city: row.city,
     state: row.state,
     country: row.country,

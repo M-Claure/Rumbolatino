@@ -312,11 +312,15 @@ export const RecordIterationAnswerBody = z.object({
 /**
  * Publishing a profile to the talent directory.
  *
- * ONE field: the consent. Everything else the listing needs — which trade it is
- * filed under, how much experience it shows, when the person can start — is
- * derived server-side from the résumé they just finished, because asking three
- * more questions at the moment someone is trying to download their CV is how you
- * lose them. See `publishTalentProfile`.
+ * TWO fields: the consent, and when the person can start.
+ *
+ * Which trade the listing is filed under and how much experience it shows are
+ * still DERIVED server-side from the résumé they just finished — nobody is asked
+ * those, because the résumé already answers them. Availability is the one thing
+ * no résumé contains, so it is the one thing worth a question. It used to be
+ * stamped `flexible` server-side to satisfy a not-null column, which meant the
+ * profile page told employers when someone could start on the strength of a
+ * placeholder.
  *
  * `acceptPublishTerms` is `literal(true)` for the same reason
  * `CreateProfileBody.acceptTerms` is: the route cannot reach a write without it,
@@ -329,6 +333,15 @@ export const PublishTalentBody = z.object({
     errorMap: () => ({
       message: "Marca la casilla para publicar tu perfil",
     }),
+  }),
+  /**
+   * Required, with no default. A default here would be the old bug wearing a
+   * different hat: the server would once again be choosing an answer on the
+   * person's behalf and publishing it as theirs. A request that cannot say when
+   * somebody can start is refused, and the popup will not let one be sent.
+   */
+  availability: z.enum(TALENT_AVAILABILITIES, {
+    errorMap: () => ({ message: "Elige cuándo podrías empezar a trabajar" }),
   }),
 });
 

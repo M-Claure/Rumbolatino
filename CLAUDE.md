@@ -395,9 +395,12 @@ search (`/empleadores`, `/talento/[slug]`). Both sides stay accountless: a job
 seeker gives their information to get a résumé, an employer gives theirs to get a
 contact. No payments, no matching, no messaging.
 
-The job seeker's whole involvement is **one checkbox in a popup** after they
-finalize. Everything else is derived. Any change that adds a question to that
-moment is a regression — it sits between someone and the PDF they came for.
+The job seeker's whole involvement is **one checkbox and one question** in a
+popup after they finalize. Everything else is derived. Adding a question to that
+moment is a regression *whenever the answer could have been derived* — it sits
+between someone and the PDF they came for. Availability is the single exception,
+and it earned it by not being derivable from anything: see the `availability`
+bullet below before adding a second one.
 
 **The profile is a PROJECTION, not a second capture surface.**
 `lib/talent/talent-projection.ts` reads `GeneratedResume` — which has already been
@@ -439,7 +442,7 @@ the directory calls a model**: the category comes from a keyword classifier
   (`lib/services/talent-publish.ts`): the résumé must be finalized, must have been
   generated, and must have a contact channel. A listing nobody can reach is pure
   exposure — it discloses a name, a city and a work history and returns nothing.
-- **The publish step is ONE checkbox.** A popup
+- **The publish step is one checkbox plus ONE question.** A popup
   (`components/talent/PublishDialog.tsx`) appears once the résumé is finalized,
   names exactly what employers get — full name, email, phone, the PDF — and takes
   a single consent, then the user carries on to their download. "No, gracias" is
@@ -570,22 +573,42 @@ the directory calls a model**: the category comes from a keyword classifier
   secondary cities too, and the person in The Woodlands or Fort Lauderdale is
   exactly who the metro is informative for. Hidden for Miami and Houston, shown
   for Katy and Sugar Land.
-- **`availability` is STORED but never RENDERED, and that is an invariant.**
-  `talent-publish.ts` stamps every listing `flexible` because the publish step is
-  one checkbox and nobody is ever asked for a start date. It satisfies a not-null
-  column; it is not an answer. `/talento/[slug]` used to print it as "Mi fecha de
-  inicio es flexible" — first person, on a page an employer reads as the
-  candidate's own words, about something the candidate was never asked. That is
-  the product inventing a fact about a person, which is the one thing this
-  codebase does not do anywhere else; it is the same argument that removed the
-  availability DROPDOWN from `TalentFilters` for being a filter over data nobody
-  supplied. `AVAILABILITY_LABELS` and `AVAILABILITY_SHORT_LABELS` are kept, both
-  unused, as what the answer will render as if the funnel ever asks. Do not wire
-  either back into a component before that question exists.
-  Note `yearsBucket` is NOT in this position and is still shown: it is derived by
-  `estimateYearsBucket` from the dates on the person's own résumé, deliberately
-  understating when they do not parse. Derived from what someone told us is not
-  the same as invented.
+- **`availability` is the ONE facet that is ASKED, not derived** (`0018`). The
+  publish popup asks "¿cuándo podrías empezar a trabajar?" and stores the answer,
+  because no résumé contains it — category and seniority stay derived precisely
+  because the résumé already answers those. It is a REQUIRED parameter of
+  `publishTalentProfile` and a required field of `PublishTalentBody`, with no
+  default on either side: it used to be hard-coded `flexible` in the service to
+  satisfy a not-null column, and `/talento/[slug]` printed that placeholder as
+  "Mi fecha de inicio es flexible" — first person, on a page an employer reads as
+  the candidate's own words. Requiring it is what makes inventing one impossible
+  rather than merely discouraged.
+  - **NULL means NEVER ASKED, and it is not `flexible`.** The column is nullable
+    and `0018` nulled every placeholder row. A null availability is rendered as
+    NOTHING (`labelForAvailability` returns null, not a fallback label) and
+    matched by NO filter — `t.availability = p_availability` is false for it, so
+    `talent_search` needed no change. Chosen over a fifth enum value like
+    `no_indicada`, which would put a non-answer in the same closed list as the
+    four answers and have to be excluded by hand in every filter, dropdown and
+    label lookup. The backfill runs ONCE, guarded on the column's own
+    nullability, because after this migration `flexible` is a real answer people
+    have chosen and a re-run of a naive `where availability = 'flexible'` would
+    erase it.
+  - **This ADDED a question to the publish popup, which the rest of this section
+    calls a regression, and it was a deliberate reversal.** The rule stands for
+    anything derivable; availability is not derivable, so the real choice was
+    "ask, or make it up". It is kept to one more DECISION and not one more STEP:
+    same popup, no new screen, four radios with nothing pre-selected (a default
+    would be the placeholder moved into the UI), and `Continuar` waits on both
+    the consent and the answer. "No, gracias" requires neither.
+  - **The employer `Disponibilidad` dropdown is back** in `TalentFilters`, which
+    is what the removal note asked for ("if the funnel ever asks for a start
+    date, put the dropdown back"). Expect it to return few people at first:
+    legacy listings are null and match nothing until their owners re-publish.
+  Note `yearsBucket` is NOT in this position and was never removed: it is derived
+  by `estimateYearsBucket` from the dates on the person's own résumé,
+  deliberately understating when they do not parse. Derived from what someone
+  told us is not the same as invented.
 - **Results are also drawn on a MAP, one pin per ZIP AREA — never per person.**
   Leaflet + OpenStreetMap: free, no API key, no billing, nothing to provision,
   the same reasoning that keeps the ZIP table out of a geocoding API. Everyone in

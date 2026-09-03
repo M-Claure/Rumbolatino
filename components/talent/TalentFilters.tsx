@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { CATEGORY_OPTIONS } from "@/lib/talent/taxonomy";
+import { AVAILABILITY_LABELS, CATEGORY_OPTIONS } from "@/lib/talent/taxonomy";
+import { TALENT_AVAILABILITIES } from "@/types";
 import type { TalentSearchFilters } from "@/types";
 import { UseMyLocation } from "@/components/UseMyLocation";
 import { MetroPicker } from "@/components/talent/MetroPicker";
@@ -42,14 +43,22 @@ import { MetroPicker } from "@/components/talent/MetroPicker";
  * for "a bit further out" is the one right next to it, where the employer sets
  * the number and can see what it did.
  *
- * No AVAILABILITY dropdown either, and that one is a different argument: it is
- * not unsafe, it is empty. `talent-publish.ts` stamps every listing `flexible`
- * because the publish step is one checkbox and nobody is asked for a start date,
- * so three of the four options returned nobody and the fourth returned everyone
- * — a control that looks like it narrows a search and does not. The filter still
- * exists below the UI (`TalentSearchQuery`, `talent_search`), so a URL carrying
- * `?availability=` keeps working; if the funnel ever asks for a start date, put
- * the dropdown back rather than inventing a second capture surface here.
+ * ── The availability dropdown is BACK, because the data is now real ────────
+ * It was removed for being empty rather than unsafe: `talent-publish.ts` used to
+ * stamp every listing `flexible` to satisfy a not-null column, so three of the
+ * four options returned nobody and the fourth returned everyone — a control that
+ * looks like it narrows a search and does not. The instruction left behind was
+ * "if the funnel ever asks for a start date, put the dropdown back rather than
+ * inventing a second capture surface here", and that is what happened: the
+ * publish popup asks it.
+ *
+ * One thing to expect while this beds in. Listings published before the question
+ * existed hold NULL, not `flexible` (`0018`), and NULL matches no availability
+ * filter — `t.availability = p_availability` is false for them. So choosing any
+ * option hides every legacy listing until its owner re-publishes. That is the
+ * honest behaviour and the reason the column is nullable: the alternative was
+ * leaving those rows claiming a start date nobody gave us. Expect this filter to
+ * return few people at first and more over time.
  */
 export function TalentFilters({
   filters,
@@ -174,6 +183,22 @@ export function TalentFilters({
             maxLength={10}
             className={field}
           />
+        </label>
+
+        <label className="block lg:col-span-2">
+          <span className="text-sm font-semibold text-text-primary">Disponibilidad</span>
+          <select
+            name="availability"
+            defaultValue={filters.availability ?? ""}
+            className={field}
+          >
+            <option value="">Cualquiera</option>
+            {TALENT_AVAILABILITIES.map((option) => (
+              <option key={option} value={option}>
+                {AVAILABILITY_LABELS[option]}
+              </option>
+            ))}
+          </select>
         </label>
 
         <label className="block lg:col-span-2">

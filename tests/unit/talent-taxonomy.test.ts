@@ -3,6 +3,8 @@ import { TALENT_CATEGORY_IDS, TALENT_AVAILABILITIES, TALENT_YEARS_BUCKETS } from
 import {
   AVAILABILITY_LABELS,
   AVAILABILITY_SHORT_LABELS,
+  isTalentAvailability,
+  labelForAvailability,
   CATEGORIES,
   CATEGORY_OPTIONS,
   YEARS_BUCKET_LABELS,
@@ -125,5 +127,40 @@ describe("rankCategories", () => {
       education: [{ credential: "Certificado en electricidad", fieldOfStudy: "Electricista" }],
     });
     expect(ranked[0]?.category).toBe("oficios");
+  });
+});
+
+/**
+ * The guarded availability accessor.
+ *
+ * A null availability means the listing predates the publish popup's question.
+ * It must render as NOTHING, never as a fallback label — that is the whole
+ * distinction `0018` made the column nullable to preserve.
+ */
+describe("labelForAvailability", () => {
+  it("labels a real answer", () => {
+    expect(labelForAvailability("inmediata")).toBe(AVAILABILITY_LABELS.inmediata);
+  });
+
+  it("returns null for no answer, not undefined and not a fallback", () => {
+    // `undefined` is the failure mode this exists to prevent: React renders it
+    // as nothing, so the bug surfaces as a stray "🕒" with no text beside it
+    // rather than as an error. Null makes the caller branch.
+    expect(labelForAvailability(null)).toBeNull();
+    expect(labelForAvailability(undefined)).toBeNull();
+  });
+});
+
+describe("isTalentAvailability", () => {
+  it("accepts the four, and nothing else", () => {
+    for (const ok of ["inmediata", "dos_semanas", "un_mes", "flexible"]) {
+      expect(isTalentAvailability(ok), ok).toBe(true);
+    }
+    // A row read back from Postgres can be null since `0018`, and a body can
+    // carry anything — so the guard is what stops "no answer" from becoming a
+    // label on somebody's profile.
+    for (const bad of [null, undefined, "", "FLEXIBLE", "no_indicada", 1, {}]) {
+      expect(isTalentAvailability(bad), String(bad)).toBe(false);
+    }
   });
 });

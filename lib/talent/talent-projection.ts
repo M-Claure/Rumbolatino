@@ -70,7 +70,12 @@ export interface TalentProjectionInput {
   profile: { targetRole?: string | null; location?: string | null };
   /** Confirmed by the user on the publish screen — never inferred here. */
   category: TalentCategory;
-  availability: TalentAvailability;
+  /**
+   * Chosen in the publish popup. `null` only for a listing projected before the
+   * question existed — never a value this function picks, which is the point of
+   * it being an argument.
+   */
+  availability: TalentAvailability | null;
   yearsBucket: TalentYearsBucket;
   /**
    * ZIP-derived location: the coordinates the map plots and the metro the metro

@@ -11,6 +11,7 @@ import type {
   ResumeProfile,
   ResumeProfileState,
   Skill,
+  TalentAvailability,
   TalentProfileStatus,
   TranslatedResume,
 } from "@/types";
@@ -21,6 +22,12 @@ export interface PublishDefaults {
   email: string | null;
   phone: string | null;
   published: boolean;
+  /**
+   * What this listing already says, for a re-publish. Null when there is no
+   * listing, or when it predates the question — either way the popup starts
+   * with nothing selected rather than pre-choosing an answer for someone.
+   */
+  availability: TalentAvailability | null;
 }
 
 export interface PublishResult {
@@ -313,11 +320,16 @@ export const api = {
   publishDefaults: (id: string) =>
     req<{ defaults: PublishDefaults }>(`/api/resume-profiles/${id}/publish`),
 
-  /** Publish the profile. The consent is the only input. */
-  publishProfile: (id: string) =>
+  /**
+   * Publish the profile. The consent and the start date — the two things the
+   * popup collects. `availability` is not optional here for the same reason it
+   * is not optional on the server: a caller with no answer must not be able to
+   * publish one on somebody's behalf.
+   */
+  publishProfile: (id: string, availability: TalentAvailability) =>
     req<PublishResult>(`/api/resume-profiles/${id}/publish`, {
       method: "POST",
-      body: JSON.stringify({ acceptPublishTerms: true }),
+      body: JSON.stringify({ acceptPublishTerms: true, availability }),
     }),
 
   /** Take the listing down. Idempotent. */

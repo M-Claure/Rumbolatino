@@ -8,7 +8,11 @@ import { DirectoryUnavailable } from "@/components/employers/DirectoryUnavailabl
 import { ResumePreview } from "@/components/talent/ResumePreview";
 import { TalentMap } from "@/components/talent/TalentMap";
 import { groupByLocation } from "@/lib/talent/map-pins";
-import { YEARS_BUCKET_LABELS, labelForCategory } from "@/lib/talent/taxonomy";
+import {
+  YEARS_BUCKET_LABELS,
+  labelForAvailability,
+  labelForCategory,
+} from "@/lib/talent/taxonomy";
 import { metroAddsPlace } from "@/lib/talent/location-label";
 import { labelForType } from "@/lib/experience-types";
 import { headers } from "next/headers";
@@ -76,6 +80,7 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
 
   const place = [profile.city, profile.state, profile.country].filter(Boolean).join(", ");
   const pins = groupByLocation([profile]);
+  const availabilityLabel = labelForAvailability(profile.availability);
 
   // Read through `revealContact` rather than a plain select, so viewing this
   // panel is written to `contact_reveals` — and now with a real `employerId`,
@@ -121,22 +126,22 @@ export default async function TalentProfilePage({ params }: { params: { slug: st
           )}
           <span>🗂️ {YEARS_BUCKET_LABELS[profile.yearsBucket]}</span>
           {/*
-            NO availability line here, deliberately, and it is not an oversight
-            to be tidied up later.
+            Availability, and ONLY when there is an answer.
 
-            `talent-publish.ts` stamps every listing `flexible` because the
-            publish step is one checkbox and nobody is ever asked for a start
-            date. Rendering that stored placeholder printed "Mi fecha de inicio
-            es flexible" — first person, on a page an employer reads as the
-            candidate's own words — about something the candidate was never
-            asked. That is the product inventing a fact about a person, which is
-            the one thing this codebase does not do anywhere else: see the safety
-            rules in CLAUDE.md, and the same reasoning that removed the
-            availability DROPDOWN from `TalentFilters` for being a filter over
-            data nobody supplied.
-            If the funnel ever asks for a start date, put this back. Until then
-            the field stays stored and unrendered — a placeholder, not a claim.
+            This line was removed once. It is back because the publish popup now
+            ASKS the question, so it prints something the person chose — not the
+            `flexible` placeholder the service used to stamp on every listing to
+            satisfy a not-null column. That version said "Mi fecha de inicio es
+            flexible", in the first person, about something nobody had been
+            asked.
+
+            The null branch is what keeps that fixed: a listing published before
+            the question existed shows NOTHING here (`0018` nulled every
+            placeholder row). `labelForAvailability` returns null rather than
+            `undefined` so a missing answer cannot degrade into a lone "🕒" with
+            no text after it.
           */}
+          {availabilityLabel && <span>🕒 {availabilityLabel}</span>}
         </div>
       </header>
 

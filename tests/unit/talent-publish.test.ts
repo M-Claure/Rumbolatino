@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AnalyticsEvent, AnalyticsProps } from "@/lib/analytics/events";
 import type { Analytics } from "@/lib/analytics";
+import type { TalentAvailability } from "@/types";
 import { MemoryStore } from "@/lib/repositories/memory-store";
 import { MemoryTalentStore } from "@/lib/repositories/talent-store";
 import { PUBLISH_TERMS_VERSION } from "@/lib/legal/terms";
@@ -70,8 +71,16 @@ async function readyProfile(
   return (await store.getResumeProfile(profile.id))!;
 }
 
-function publish(profile: Awaited<ReturnType<typeof readyProfile>>) {
-  return publishTalentProfile({ store, talent, analytics, userId: USER, profile });
+/**
+ * `availability` is a REQUIRED parameter, so every call has to state one. That
+ * is the point of it: it used to be hard-coded `flexible` inside the service,
+ * and a required argument is what stops that from happening again silently.
+ */
+function publish(
+  profile: Awaited<ReturnType<typeof readyProfile>>,
+  availability: TalentAvailability = "dos_semanas",
+) {
+  return publishTalentProfile({ store, talent, analytics, userId: USER, profile, availability });
 }
 
 beforeEach(() => {
@@ -155,14 +164,35 @@ describe("the published listing", () => {
   });
 
   it("derives the filter facets from the résumé instead of asking", async () => {
-    // Nobody is asked about their trade at the download screen, so the category
-    // comes from the classifier reading their own finished résumé.
+    // Nobody is asked about their trade or their seniority at the download
+    // screen, because the résumé they just finished already answers both.
     const profile = await readyProfile();
     await publish(profile);
     const listing = (await talent.getByFunnelId(profile.id))!;
     expect(listing.profile.category).toBe("belleza"); // targetRole "Cosmetóloga"
-    // Nobody stated a start date, so the listing promises nothing.
-    expect(listing.profile.availability).toBe("flexible");
+    expect(listing.profile.yearsBucket).toBeTruthy();
+  });
+
+  it("stores the availability the person CHOSE, never a default", async () => {
+    // The bug this replaced: the service wrote `flexible` on every listing to
+    // satisfy a not-null column, and the profile page printed it as the
+    // candidate's own words. Availability is now the one facet that is answered
+    // rather than derived — no résumé says when somebody is free to start.
+    for (const chosen of ["inmediata", "dos_semanas", "un_mes", "flexible"] as const) {
+      talent = new MemoryTalentStore();
+      const profile = await readyProfile();
+      await publish(profile, chosen);
+      expect((await talent.getByFunnelId(profile.id))!.profile.availability).toBe(chosen);
+    }
+  });
+
+  it("reports the chosen availability to analytics", async () => {
+    // Worth recording now that it is a real choice out of a closed set; it was
+    // pointless while every listing said the same thing.
+    const profile = await readyProfile();
+    await publish(profile, "inmediata");
+    const event = analytics.events.find((e) => e.event === "talent_profile_published");
+    expect(event?.props.availability).toBe("inmediata");
   });
 
   it("resolves the metro from the captured ZIP, once, at publish time", async () => {
@@ -225,6 +255,10 @@ describe("the published listing", () => {
       // The fixture has no experience entries, so the estimator says so
       // rather than inventing a range.
       yearsBucket: "sin_experiencia",
+      // The `publish` helper's default. Every value here is a closed-set id or
+      // an opaque profile id — no free text, which is what this assertion is
+      // really pinning. See the analytics allow-list.
+      availability: "dos_semanas",
     });
   });
 });
@@ -246,9 +280,20 @@ describe("re-publishing after an edit", () => {
 
     await store.updateResumeProfile(profile.id, { targetRole: "Cocinera de restaurante" });
     const updated = (await store.getResumeProfile(profile.id))!;
-    await publishTalentProfile({ store, talent, analytics, userId: USER, profile: updated });
+    // A re-publish re-sends the availability the person already chose, which is
+    // what `PublishDefaults.availability` hands the popup. It is DERIVED facets
+    // that change here; the answered one is carried, not recomputed.
+    await publishTalentProfile({
+      store,
+      talent,
+      analytics,
+      userId: USER,
+      profile: updated,
+      availability: "dos_semanas",
+    });
 
     expect((await talent.getByFunnelId(profile.id))!.profile.category).toBe("gastronomia");
+    expect((await talent.getByFunnelId(profile.id))!.profile.availability).toBe("dos_semanas");
   });
 
   it("keeps the slug, so a URL already sent to an employer keeps working", async () => {
@@ -306,6 +351,18 @@ describe("unpublishing", () => {
 // ── Defaults for the form ───────────────────────────────────────────────────
 
 describe("getPublishDefaults", () => {
+  it("hands a re-publish back the answer already on the listing", async () => {
+    // So that fixing a résumé does not re-open a question the person has
+    // already answered. Null before there is a listing, because the popup must
+    // start with NOTHING selected — a pre-chosen answer to "when can you start?"
+    // is how the old placeholder got mistaken for an answer.
+    const profile = await readyProfile();
+    expect((await getPublishDefaults(store, talent, profile.id)).availability).toBeNull();
+
+    await publish(profile, "un_mes");
+    expect((await getPublishDefaults(store, talent, profile.id)).availability).toBe("un_mes");
+  });
+
   it("returns what the popup shows, and nothing it does not need", async () => {
     const profile = await readyProfile();
     const defaults = await getPublishDefaults(store, talent, profile.id);
@@ -316,6 +373,9 @@ describe("getPublishDefaults", () => {
       email: "maria@correo.com",
       phone: "555 123 4567",
       published: false,
+      // Null, not a suggestion: the popup opens with nothing selected. An exact
+      // shape here so a field added to `PublishDefaults` has to be looked at.
+      availability: null,
     });
     // Reading it must not create anything: the popup may be declined.
     expect(await talent.getByFunnelId(profile.id)).toBeNull();

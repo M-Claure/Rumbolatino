@@ -13,7 +13,11 @@
  * filter bar sends, and a regression here silently un-fixes the search box.
  */
 import { describe, expect, it } from "vitest";
-import { MetroQuery, TalentSearchQuery } from "@/lib/validation/api-schemas";
+import {
+  MetroQuery,
+  PublishTalentBody,
+  TalentSearchQuery,
+} from "@/lib/validation/api-schemas";
 
 /** What the browser actually sends for a given state of the filter bar. */
 const formSubmission = (over: Record<string, string> = {}) => ({
@@ -164,5 +168,47 @@ describe("MetroQuery — the autocomplete's parameter", () => {
 
   it("still bounds the length", () => {
     expect(MetroQuery.safeParse({ q: "x".repeat(121) }).success).toBe(false);
+  });
+});
+
+/**
+ * The publish body — the two things the popup collects.
+ *
+ * `availability` has no default here on purpose. A default would be the old bug
+ * in a new place: the server choosing an answer to "when can you start?" and
+ * publishing it as the person's own. The popup will not send a request without
+ * one, and this is what makes that structural rather than a UI convention.
+ */
+describe("PublishTalentBody", () => {
+  it("accepts the consent plus a chosen availability", () => {
+    const parsed = PublishTalentBody.safeParse({
+      acceptPublishTerms: true,
+      availability: "inmediata",
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("REFUSES a publish with no availability", () => {
+    const parsed = PublishTalentBody.safeParse({ acceptPublishTerms: true });
+    expect(parsed.success).toBe(false);
+    expect(parsed.success === false && parsed.error.issues[0]?.path).toEqual(["availability"]);
+  });
+
+  it("refuses a value that is not one of the four", () => {
+    for (const bad of ["flexibles", "", null, "no_indicada", "FLEXIBLE"]) {
+      expect(
+        PublishTalentBody.safeParse({ acceptPublishTerms: true, availability: bad }).success,
+        String(bad),
+      ).toBe(false);
+    }
+  });
+
+  it("still refuses a publish without the consent", () => {
+    // Unchanged by the new field: `literal(true)` is what makes the write
+    // unreachable without consent, and adding a question must not weaken it.
+    expect(
+      PublishTalentBody.safeParse({ acceptPublishTerms: false, availability: "inmediata" }).success,
+    ).toBe(false);
+    expect(PublishTalentBody.safeParse({ availability: "inmediata" }).success).toBe(false);
   });
 });

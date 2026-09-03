@@ -23,7 +23,7 @@
  * Short keywords (≤ 4 characters) are matched as WHOLE words instead, because a
  * four-letter stem is long enough to appear inside unrelated ones.
  */
-import { TALENT_CATEGORY_IDS, type TalentCategory } from "@/types/talent";
+import { TALENT_AVAILABILITIES, TALENT_CATEGORY_IDS, type TalentCategory } from "@/types/talent";
 import type { TalentAvailability, TalentYearsBucket } from "@/types/talent";
 
 export interface TalentCategoryDef {
@@ -158,6 +158,26 @@ export function labelForCategory(id: TalentCategory): string {
   return CATEGORIES[id].label;
 }
 
+/**
+ * The availability label, or null when there is no answer to label.
+ *
+ * A guarded accessor rather than `AVAILABILITY_LABELS[value]` at each call site,
+ * because the failure it prevents is silent: with `noUncheckedIndexedAccess` a
+ * null index yields `undefined`, which React renders as nothing — so the bug
+ * shows up not here but as a stray "🕒" bullet with no text beside it. Returning
+ * null makes the caller branch.
+ */
+export function labelForAvailability(
+  value: TalentAvailability | null | undefined,
+): string | null {
+  return value ? AVAILABILITY_LABELS[value] : null;
+}
+
+/** True when `value` is an availability we know. Use before trusting a row or a body. */
+export function isTalentAvailability(value: unknown): value is TalentAvailability {
+  return typeof value === "string" && (TALENT_AVAILABILITIES as readonly string[]).includes(value);
+}
+
 /** True when `value` is a category id we know. Use before trusting a request body. */
 export function isTalentCategory(value: unknown): value is TalentCategory {
   return typeof value === "string" && (TALENT_CATEGORY_IDS as readonly string[]).includes(value);
@@ -168,18 +188,19 @@ export function isTalentCategory(value: unknown): value is TalentCategory {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * ── Nothing renders these, and that is deliberate ──────────────────────────
- * Every listing is stamped `flexible` by `talent-publish.ts` because the publish
- * step is one checkbox and nobody is asked for a start date. So these strings
- * describe a value no user ever chose, and printing one states a fact about a
- * person that they never gave us — `/talento/[slug]` did exactly that, in the
- * first person ("Mi fecha de inicio es flexible"), until it was removed.
+ * ── These are rendered again, because the question is now ASKED ────────────
+ * The publish popup asks "¿cuándo podrías empezar a trabajar?" and stores the
+ * answer, so these labels describe something the person actually chose. For a
+ * while they were kept and deliberately unrendered: every listing was stamped
+ * `flexible` to satisfy a not-null column, and printing that placeholder had
+ * `/talento/[slug]` telling employers "Mi fecha de inicio es flexible" — first
+ * person — about something nobody had been asked.
  *
- * They are KEPT rather than deleted for the same reason `search_tsv` is: the
- * filter still exists in `TalentSearchQuery` and in `talent_search`, so a URL
- * carrying `?availability=` keeps working, and the day the funnel asks for a
- * start date this is what the answer renders as. Do not wire either of these
- * back into a component before that question exists.
+ * That history is the constraint on using them: **only ever render a non-null
+ * availability.** `null` means the listing predates the question (`0018` nulled
+ * every placeholder row), and it must show nothing rather than fall back to a
+ * label. `labelForAvailability` is the guarded accessor; prefer it to indexing
+ * this record directly.
  */
 export const AVAILABILITY_LABELS: Record<TalentAvailability, string> = {
   inmediata: "Puedo empezar de inmediato",

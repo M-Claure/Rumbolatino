@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import type { ResumeProfile, TalentListing } from "@/types";
+import type { ResumeProfile, TalentAvailability, TalentListing } from "@/types";
 import type { Analytics } from "@/lib/analytics";
 import { Errors } from "@/lib/errors";
 import { PUBLISH_TERMS_VERSION } from "@/lib/legal/terms";
@@ -53,6 +53,17 @@ export interface PublishDefaults {
   phone: string | null;
   /** True when this résumé is already listed — the popup then does not appear. */
   published: boolean;
+  /**
+   * The availability already on the listing, so a RE-publish can send back what
+   * the person chose the first time instead of asking again. Null when there is
+   * no listing yet, and also for a listing published before the question
+   * existed — in both cases the popup starts with nothing selected.
+   *
+   * Deliberately not a suggested default for a first publish: pre-selecting an
+   * answer to "when could you start?" is how the placeholder got mistaken for
+   * an answer in the first place.
+   */
+  availability: TalentAvailability | null;
 }
 
 export interface PublishTalentProfileInput {
@@ -61,6 +72,21 @@ export interface PublishTalentProfileInput {
   analytics: Analytics;
   userId: string;
   profile: ResumeProfile;
+  /**
+   * When the person said they could start — the ONE thing the popup asks
+   * besides the consent.
+   *
+   * REQUIRED, and required on purpose. It used to be hard-coded `flexible` here
+   * to satisfy a not-null column, which meant every listing carried a start date
+   * nobody had chosen and the profile page printed it as the candidate's own
+   * words. Making it a parameter is what stops this function from being able to
+   * invent one again: there is no default to fall back to, so a caller that does
+   * not have a real answer cannot publish.
+   *
+   * A re-publish sends back what `PublishDefaults.availability` returned, so
+   * fixing a résumé does not re-open the question.
+   */
+  availability: TalentAvailability;
   now?: Date;
 }
 
@@ -84,6 +110,7 @@ export async function getPublishDefaults(
     email: personal?.email?.trim() || null,
     phone: personal?.phone?.trim() || null,
     published: existing?.status === "published",
+    availability: existing?.profile.availability ?? null,
   };
 }
 
@@ -173,12 +200,10 @@ export async function publishTalentProfile(
     personal,
     profile: { targetRole: profile.targetRole, location: profile.location },
     category,
-    // Nobody was asked, so the listing promises nothing it cannot keep. This is
-    // a PLACEHOLDER satisfying a not-null column, never an answer: it must not
-    // be rendered as a claim about the person. `/talento/[slug]` printed it as
-    // "Mi fecha de inicio es flexible" and that was a bug — see the note on
-    // `AVAILABILITY_LABELS`.
-    availability: "flexible",
+    // Straight from the popup. The one facet on a listing that is ANSWERED
+    // rather than derived — category and seniority are read out of the finished
+    // résumé, but no résumé says when somebody is free to start.
+    availability: input.availability,
     yearsBucket: estimateYearsBucket(state.experience, now.getUTCFullYear()),
     // The same object reaches the store below, so the public projection and the
     // stored row cannot end up describing two different places.
@@ -211,6 +236,10 @@ export async function publishTalentProfile(
       resumeProfileId: profile.id,
       talentCategory: projection.public.category,
       yearsBucket: projection.public.yearsBucket,
+      // Now worth recording: it is a real choice out of a closed set of four,
+      // so the distribution says something about the supply side. It was
+      // pointless while every listing was stamped `flexible`.
+      ...(projection.public.availability ? { availability: projection.public.availability } : {}),
     },
     userId,
   );

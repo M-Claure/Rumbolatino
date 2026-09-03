@@ -179,19 +179,40 @@ comma first, so `Chicago-Naperville-Elgin, IL-IN` does not yield `IL` as a city.
 The line is prefixed "Área de", because the bare title does not say it is a metro
 area.
 
-### What this page does NOT show: availability
+### Availability: asked, then shown
 
-`talent-publish.ts` stamps every listing `flexible` — nobody is asked for a start
-date, and the publish step is one checkbox. That value satisfies a not-null
-column; it is not an answer. The profile header rendered it as "Mi fecha de
-inicio es flexible", in the first person, about something the candidate never
-told us, which is the product inventing a fact about a person. It is gone.
+The profile header shows availability again, and the employer filter is back —
+because `0018` made the publish popup **ask** the question. Before that,
+`talent-publish.ts` stamped every listing `flexible` to satisfy a not-null
+column, and the header printed that placeholder as "Mi fecha de inicio es
+flexible", in the first person, about something nobody had been asked.
 
-`AVAILABILITY_LABELS` and `AVAILABILITY_SHORT_LABELS` are kept and unused, the
-same way `search_tsv` is: the filter still exists in `TalentSearchQuery` and
-`talent_search` so a bookmarked `?availability=` keeps working, and those strings
-are what the answer will render as if the funnel ever asks. Do not wire them back
-into a component before that question exists.
+Three things hold it together:
+
+1. **Required everywhere, defaulted nowhere.** `availability` is a required
+   parameter of `publishTalentProfile` and a required field of
+   `PublishTalentBody`. A caller with no real answer cannot publish, which is
+   what makes "the server never invents one" structural instead of a convention.
+2. **NULL means never asked.** The column is nullable and `0018` nulled every
+   placeholder row. Null renders as nothing (`labelForAvailability` returns null
+   rather than a fallback label) and matches no filter, since
+   `t.availability = p_availability` is false for it — `talent_search` needed no
+   change at all. A fifth enum value (`no_indicada`) was rejected: it would put a
+   non-answer in the same closed list as the four answers and then have to be
+   excluded by hand in every filter, dropdown and label lookup.
+3. **The backfill runs once.** Guarded on the column's own nullability, because
+   once the popup is live `flexible` is a real answer people have chosen, and a
+   re-run of a naive `update … where availability = 'flexible'` would erase it.
+
+The cost is one more decision in the publish popup, which the directory's design
+notes otherwise call a regression. The rule stands for anything derivable —
+category and seniority are still read out of the finished résumé. Availability is
+not in any résumé, so the real choice was "ask, or make it up". It is kept to a
+decision and not a step: same popup, four radios, nothing pre-selected, and
+`Continuar` waits on both the consent and the answer.
+
+Expect the employer filter to return few people at first. Legacy listings are
+null and match nothing until their owners re-publish.
 
 ### The autocomplete knows nothing about anybody
 

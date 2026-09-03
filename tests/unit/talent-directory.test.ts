@@ -477,6 +477,51 @@ describe("proximity search", () => {
   });
 });
 
+// ── Availability ────────────────────────────────────────────────────────────
+
+describe("availability filter", () => {
+  beforeEach(async () => {
+    await seed({ slug: "ya", availability: "inmediata" });
+    await seed({ slug: "dos", availability: "dos_semanas" });
+    await seed({ slug: "flex", availability: "flexible" });
+    // A listing from before the publish popup asked the question. `0018` nulled
+    // every one of these; they used to all read `flexible`.
+    await seed({ slug: "legado", availability: null });
+  });
+
+  it("matches the answer the person chose", async () => {
+    expect((await talent.search({ availability: "inmediata" })).profiles.map((p) => p.slug)).toEqual(["ya"]);
+    expect((await talent.search({ availability: "dos_semanas" })).profiles.map((p) => p.slug)).toEqual(["dos"]);
+  });
+
+  it("EXCLUDES a listing that was never asked, and does not read it as flexible", async () => {
+    // The distinction the nullable column exists for. Before the question was
+    // asked every row said `flexible`, so this filter returned everybody for one
+    // option and nobody for the other three — a control that looks like it
+    // narrows a search and does not. A null row must match NO option, including
+    // the one it used to be defaulted to.
+    for (const availability of ["inmediata", "dos_semanas", "un_mes", "flexible"] as const) {
+      const slugs = (await talent.search({ availability })).profiles.map((p) => p.slug);
+      expect(slugs, availability).not.toContain("legado");
+    }
+  });
+
+  it("still lists the unanswered ones when no availability filter is set", async () => {
+    // The complement, and what makes the exclusion a narrowing rather than
+    // those people becoming unreachable.
+    expect((await talent.search({})).total).toBe(4);
+  });
+
+  it("intersects with the other filters rather than widening them", async () => {
+    await seed({ slug: "ya-dallas", availability: "inmediata" }, { location: PLACES.dallas });
+    const { profiles } = await talent.search({
+      availability: "inmediata",
+      cbsaCode: HOUSTON_CBSA,
+    });
+    expect(profiles.map((p) => p.slug)).toEqual(["ya"]);
+  });
+});
+
 // ── Metro (CBSA) ────────────────────────────────────────────────────────────
 
 describe("metro search", () => {

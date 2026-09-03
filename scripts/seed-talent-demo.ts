@@ -67,6 +67,10 @@ import {
 import { talentExpiryFrom } from "@/lib/repositories/talent-store";
 import { resumePdfPath, RESUME_BUCKET } from "@/lib/storage/resume-file-store";
 import { DEMO_PEOPLE, type DemoPerson } from "./demo-people";
+import { TALENT_AVAILABILITIES } from "@/types";
+
+/** Cycled across the demo people; see the note at the call site. */
+const DEMO_AVAILABILITIES = TALENT_AVAILABILITIES;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The marker
@@ -398,7 +402,7 @@ async function seed(admin: SupabaseClient, args: Args): Promise<void> {
   const browser = args.pdf ? await puppeteer.launch({ headless: true }) : null;
 
   try {
-    for (const person of DEMO_PEOPLE) {
+    for (const [index, person] of DEMO_PEOPLE.entries()) {
       const built = buildPerson(person);
       const userId = await ensureUser(admin, person);
 
@@ -514,7 +518,11 @@ async function seed(admin: SupabaseClient, args: Args): Promise<void> {
         personal: p.personal,
         profile: { targetRole: person.targetRole, location: p.location },
         category,
-        availability: "flexible",
+        // Varied deliberately, and derived from the index rather than random so
+        // a re-seed is stable: a demo where every listing says the same thing
+        // cannot show the availability filter working, which is exactly the
+        // state the real data was in before the popup asked.
+        availability: DEMO_AVAILABILITIES[index % DEMO_AVAILABILITIES.length]!,
         yearsBucket,
         location,
         slug:

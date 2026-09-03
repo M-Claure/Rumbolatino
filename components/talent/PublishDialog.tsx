@@ -4,16 +4,31 @@ import { useEffect, useState } from "react";
 import { api, ApiError, type PublishDefaults } from "@/lib/client/api";
 import { Button } from "@/components/primitives";
 import { PUBLISH_TERMS_LABEL, TERMS_URL } from "@/lib/legal/terms";
+import { AVAILABILITY_LABELS } from "@/lib/talent/taxonomy";
+import { TALENT_AVAILABILITIES, type TalentAvailability } from "@/types";
 
 /**
  * The one question asked after a résumé is finalized: do you want employers to
  * see you?
  *
- * A popup with a single checkbox, deliberately. Everything the listing needs
- * beyond the consent — trade, seniority, availability — is derived server-side
- * from the résumé the person just finished, because this appears at the moment
- * they are trying to download their CV. Anything more than one decision here
- * costs opt-ins and gets in the way of the thing they actually came for.
+ * ── One decision became two, and the second one earns it ───────────────────
+ * A checkbox, plus one question: when could you start? Trade and seniority are
+ * still DERIVED server-side from the résumé the person just finished, because
+ * the résumé already answers those and asking would be pure friction at the
+ * moment somebody is trying to download their CV.
+ *
+ * Availability is the exception because no résumé contains it. It used to be
+ * stamped `flexible` on every listing to satisfy a not-null column, and the
+ * profile page printed that placeholder as the candidate's own words — so the
+ * choice was never "ask or derive", it was "ask or make it up". The employer
+ * filter had been removed for the same reason: a control over data nobody
+ * supplied.
+ *
+ * The cost is kept to a DECISION, not a STEP: same popup, no new screen, four
+ * radio buttons in the flow the person is already reading. Nothing is
+ * pre-selected — a default answer to "when can you start?" is exactly how the
+ * placeholder got mistaken for an answer in the first place — so `Continuar`
+ * waits for both the consent and the choice.
  *
  * Both answers lead straight back to the download — `onResolved` fires the same
  * download the button does, so answering this question IS the download. It used
@@ -66,6 +81,9 @@ export function PublishDialog({
   const [defaults, setDefaults] = useState<PublishDefaults | null>(null);
   const [open, setOpen] = useState(false);
   const [agreed, setAgreed] = useState(false);
+  // Nothing pre-selected. See the note above: a default here would be the
+  // server-side placeholder moved into the UI.
+  const [availability, setAvailability] = useState<TalentAvailability | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [published, setPublished] = useState(false);
@@ -78,6 +96,9 @@ export function PublishDialog({
         if (cancelled) return;
         setDefaults(res.defaults);
         setPublished(res.defaults.published);
+        // A re-publish keeps what the person chose last time, so fixing a
+        // résumé does not re-open a question they have already answered.
+        if (res.defaults.availability) setAvailability(res.defaults.availability);
         // Never on top of an existing listing, and never after a decline.
         if (!res.defaults.published && !wasDismissed(profileId)) setOpen(true);
       })
@@ -90,11 +111,14 @@ export function PublishDialog({
   }, [profileId]);
 
   async function publish() {
-    if (!agreed || saving) return;
+    // Both gates, re-checked here and not only on the disabled button: the
+    // button is a hint, this is the control. `availability` being null is also
+    // what the server refuses, so the two agree.
+    if (!agreed || !availability || saving) return;
     setSaving(true);
     setError(null);
     try {
-      await api.publishProfile(profileId);
+      await api.publishProfile(profileId, availability);
       setPublished(true);
       setOpen(false);
       onResolved?.();
@@ -192,6 +216,45 @@ export function PublishDialog({
           </ul>
         </div>
 
+        {/*
+          The one question. A radio GROUP, not a `<select>`: four short options
+          are all visible at once, each is a full-width tap target on a phone,
+          and nothing is hidden behind a control someone has to open to discover
+          it is empty. `name` ties them into one group so a screen reader
+          announces "1 of 4", and `fieldset`/`legend` is what makes the question
+          itself part of each option's accessible name.
+        */}
+        <fieldset className="mt-4">
+          <legend className="text-base font-bold text-text-primary">
+            ¿Cuándo podrías empezar a trabajar?
+          </legend>
+          <p className="mt-0.5 text-xs leading-snug text-text-secondary">
+            Las empresas buscan por esto. Puedes cambiarlo después.
+          </p>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {TALENT_AVAILABILITIES.map((option) => (
+              <label
+                key={option}
+                className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-base leading-snug transition ${
+                  availability === option
+                    ? "border-accent bg-accent-light text-text-primary"
+                    : "border-border bg-white text-text-primary hover:bg-panel"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="availability"
+                  value={option}
+                  checked={availability === option}
+                  onChange={() => setAvailability(option)}
+                  className="h-5 w-5 shrink-0 accent-[rgb(var(--c-accent))]"
+                />
+                {AVAILABILITY_LABELS[option]}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
         <label className="mt-4 flex items-start gap-3">
           <input
             type="checkbox"
@@ -219,7 +282,9 @@ export function PublishDialog({
         {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
 
         <div className="mt-5 flex flex-col gap-2 sm:flex-row-reverse">
-          <Button onClick={publish} disabled={!agreed || saving}>
+          {/* Gated on BOTH, so the button never promises a publish the server
+              would refuse — `availability` has no default on either side. */}
+          <Button onClick={publish} disabled={!agreed || !availability || saving}>
             {saving ? "Publicando…" : "Continuar"}
           </Button>
           <Button variant="secondary" onClick={decline} disabled={saving}>

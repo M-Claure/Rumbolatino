@@ -51,6 +51,15 @@ export type TalentCategory = (typeof TALENT_CATEGORY_IDS)[number];
 /**
  * How soon the person can start. Coarse on purpose — an exact date goes stale
  * the moment it is stored, and nobody updates a directory listing.
+ *
+ * ── NULL is a real state, and it is not "flexible" ─────────────────────────
+ * Everywhere this is optional, `null` means NOBODY WAS ASKED. It has to stay
+ * distinguishable from a chosen `flexible`, because they license different
+ * things: an answer may be shown to employers and matched by the filter, a
+ * non-answer may not. Every listing published before the publish popup asked
+ * the question carries `null` (`0018`), and collapsing the two would turn each
+ * of those rows into a claim its owner never made — see the note on
+ * `AVAILABILITY_LABELS`.
  */
 export const TALENT_AVAILABILITIES = ["inmediata", "dos_semanas", "un_mes", "flexible"] as const;
 export type TalentAvailability = (typeof TALENT_AVAILABILITIES)[number];
@@ -165,7 +174,12 @@ export interface TalentProfilePublic {
   experience: TalentExperienceBlock[];
   languages: TalentLanguageBlock[];
   yearsBucket: TalentYearsBucket;
-  availability: TalentAvailability;
+  /**
+   * When they said they could start, or `null` when they were never asked —
+   * every listing published before the popup carried the question. Null is not
+   * rendered and is matched by no availability filter.
+   */
+  availability: TalentAvailability | null;
   /** City / state / country only — never finer than a commute. */
   city: string | null;
   state: string | null;

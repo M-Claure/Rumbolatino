@@ -25,8 +25,10 @@ export const dynamic = "force-dynamic";
  */
 
 /**
- * GET — what the publish form should show: the suggested category, the estimated
- * seniority, the public display name, and the current listing if there is one.
+ * GET — what the publish form should show: the public display name, the contact
+ * channels employers will get, whether there is already a listing, and the
+ * availability that listing holds (so a re-publish sends back the person's own
+ * earlier answer rather than re-asking).
  *
  * Read-only and side-effect free, so opening the form and walking away leaves
  * nothing behind. Not rate-limited beyond the usual: it writes nothing and
@@ -62,9 +64,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
     const profile = await loadOwnedProfile(store, params.id, userId);
     await enforceRateLimit("talent_publish", { userId });
 
-    // Parsed for the consent alone: `acceptPublishTerms: literal(true)` means the
-    // publish below is unreachable without it.
-    PublishTalentBody.parse(await readJson(request));
+    // The consent AND the one answer the popup collects.
+    // `acceptPublishTerms: literal(true)` means the publish below is unreachable
+    // without consent; `availability` has no default, so it is equally
+    // unreachable without a real answer — the service takes it as a required
+    // parameter precisely so this route cannot invent one.
+    const body = PublishTalentBody.parse(await readJson(request));
 
     const listing = await publishTalentProfile({
       store,
@@ -72,6 +77,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       analytics,
       userId,
       profile,
+      availability: body.availability,
     });
 
     // The manage token is deliberately NOT returned. It is stored (so the
